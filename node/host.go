@@ -18,11 +18,10 @@ import (
 	"github.com/libp2p/go-libp2p/p2p/transport/tcp"
 )
 
-// NewHost creates a libp2p host with TCP+QUIC transports, noise security, yamux+mplex muxers.
-// It returns the host and the secp256k1 private key (needed for discv5).
+// NewHost creates a libp2p host and returns it along with the secp256k1 private key (needed for discv5).
 // If keyFile is non-empty, the key is loaded from (or saved to) that path.
-// The key file format matches prysm: hex-encoded raw secp256k1 private key bytes.
-func NewHost(tcpPort, quicPort uint, keyFile string) (host.Host, *ecdsa.PrivateKey, error) {
+// If quicOnly is true, only the QUIC transport is configured (no TCP, yamux, or mplex).
+func NewHost(tcpPort, quicPort uint, keyFile string, quicOnly bool) (host.Host, *ecdsa.PrivateKey, error) {
 	privKey, err := loadOrGenerateKey(keyFile)
 	if err != nil {
 		return nil, nil, fmt.Errorf("key: %w", err)
@@ -33,19 +32,33 @@ func NewHost(tcpPort, quicPort uint, keyFile string) (host.Host, *ecdsa.PrivateK
 		return nil, nil, fmt.Errorf("convert key: %w", err)
 	}
 
-	h, err := libp2p.New(
+	opts := []libp2p.Option{
 		libp2p.Identity(libp2pKey),
-		libp2p.ListenAddrStrings(
-			fmt.Sprintf("/ip4/0.0.0.0/tcp/%d", tcpPort),
-			fmt.Sprintf("/ip4/0.0.0.0/udp/%d/quic-v1", quicPort),
-		),
-		libp2p.Transport(tcp.NewTCPTransport),
-		libp2p.Transport(libp2pquic.NewTransport),
 		libp2p.Security(noise.ID, noise.New),
-		libp2p.Muxer(yamux.ID, yamux.DefaultTransport),
-		libp2p.Muxer(mplex.ID, mplex.DefaultTransport),
 		libp2p.DisableRelay(),
-	)
+	}
+
+	if quicOnly {
+		opts = append(opts,
+			libp2p.Transport(libp2pquic.NewTransport),
+			libp2p.ListenAddrStrings(
+				fmt.Sprintf("/ip4/0.0.0.0/udp/%d/quic-v1", quicPort),
+			),
+		)
+	} else {
+		opts = append(opts,
+			libp2p.ListenAddrStrings(
+				fmt.Sprintf("/ip4/0.0.0.0/tcp/%d", tcpPort),
+				fmt.Sprintf("/ip4/0.0.0.0/udp/%d/quic-v1", quicPort),
+			),
+			libp2p.Transport(tcp.NewTCPTransport),
+			libp2p.Transport(libp2pquic.NewTransport),
+			libp2p.Muxer(yamux.ID, yamux.DefaultTransport),
+			libp2p.Muxer(mplex.ID, mplex.DefaultTransport),
+		)
+	}
+
+	h, err := libp2p.New(opts...)
 	if err != nil {
 		return nil, nil, fmt.Errorf("create libp2p host: %w", err)
 	}

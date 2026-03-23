@@ -64,6 +64,20 @@ var (
 			Help: "Total peers found via discv5",
 		},
 	)
+
+	QUICPeers = prometheus.NewGauge(
+		prometheus.GaugeOpts{
+			Name: "beaconprobe_quic_peers",
+			Help: "Number of peers connected via QUIC",
+		},
+	)
+
+	TCPPeers = prometheus.NewGauge(
+		prometheus.GaugeOpts{
+			Name: "beaconprobe_tcp_peers",
+			Help: "Number of peers connected via TCP",
+		},
+	)
 )
 
 func init() {
@@ -75,6 +89,8 @@ func init() {
 		ConnectedPeers,
 		MeshPeers,
 		DiscoveryPeersFound,
+		QUICPeers,
+		TCPPeers,
 	)
 }
 

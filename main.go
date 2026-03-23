@@ -25,13 +25,16 @@ import (
 func main() {
 	tcpPort := flag.Uint("tcp-port", 9020, "libp2p TCP listen port")
 	quicPort := flag.Uint("quic-port", 9021, "libp2p QUIC listen port")
-	discPort := flag.Uint("disc-port", 9022, "discv5 UDP listen port")
+	discPort := flag.Uint("discv5-port", 9022, "discv5 UDP listen port")
+	discV4Port := flag.Uint("discv4-port", 9023, "discv4 UDP listen port (0 to disable)")
 	subnetsFlag := flag.String("subnets", "0,1,2,3", "comma-separated attestation subnet IDs")
 	metricsAddr := flag.String("metrics-addr", ":9090", "Prometheus metrics listen address")
 	logLevel := flag.String("log-level", "info", "log level (debug, info, warn, error)")
 	logFilePath := flag.String("log-file-path", "", "file path to log attestation arrival times")
 	gossipD := flag.Int("gossip-d", 8, "gossipsub mesh degree (set high e.g. 10000 for observer mode)")
 	keyFile := flag.String("key-file", "", "path to persist node private key (reuse peer ID across restarts)")
+	quicOnly := flag.Bool("quic-only", false, "only use QUIC transport (disable TCP/yamux entirely)")
+	disableIHave := flag.Bool("disable-ihave", false, "disable gossipsub IHAVE gossip")
 	flag.Parse()
 
 	var slogLevel slog.Level
@@ -77,7 +80,7 @@ func main() {
 	go metrics.Serve(*metricsAddr)
 
 	// 2. Create libp2p host.
-	h, privKey, err := node.NewHost(*tcpPort, *quicPort, *keyFile)
+	h, privKey, err := node.NewHost(*tcpPort, *quicPort, *keyFile, *quicOnly)
 	if err != nil {
 		slog.Error("failed to create libp2p host", "error", err)
 		os.Exit(1)
@@ -100,7 +103,7 @@ func main() {
 	if *logFilePath != "" {
 		gossipLogFile = filepath.Join(filepath.Dir(*logFilePath), "gossipsub-logs.log")
 	}
-	ps, err := node.NewGossipSub(ctx, h, genesisValRoot, *gossipD, gossipLogFile)
+	ps, err := node.NewGossipSub(ctx, h, genesisValRoot, *gossipD, *disableIHave, gossipLogFile)
 	if err != nil {
 		slog.Error("failed to create gossipsub", "error", err)
 		os.Exit(1)
@@ -142,6 +145,7 @@ func main() {
 		ForkDigest:   forkDigest,
 		SubnetIDs:    subnetIDs,
 		AttnetsBytes: attnetsBytes,
+		DiscV4Port:   *discV4Port,
 	}
 	if err := discovery.StartDiscovery(ctx, h, discCfg); err != nil {
 		slog.Error("failed to start discovery", "error", err)

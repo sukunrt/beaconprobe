@@ -18,14 +18,18 @@ const gossipSubHeartbeatInterval = 700 * time.Millisecond
 
 // NewGossipSub creates a gossipsub instance configured with eth2 parameters.
 // d sets the target mesh degree; Dlo and Dhi are derived from it.
-func NewGossipSub(ctx context.Context, h host.Host, genesisValRoot []byte, d int, gossipLogFile string) (*pubsub.PubSub, error) {
+func NewGossipSub(ctx context.Context, h host.Host, genesisValRoot []byte, d int, disableIHave bool, gossipLogFile string) (*pubsub.PubSub, error) {
 	gsParams := pubsub.DefaultGossipSubParams()
 	gsParams.D = d
 	gsParams.Dlo = max(d-2, 1)
 	gsParams.Dhi = d + d/2
+	gsParams.Dlazy = 6
 	gsParams.HeartbeatInterval = gossipSubHeartbeatInterval
+	gsParams.FanoutTTL = 60 * time.Second
+	gsParams.HistoryLength = 6
+	gsParams.HistoryGossip = 3
 
-	return pubsub.NewGossipSub(ctx, h,
+	opts := []pubsub.Option{
 		pubsub.WithGossipSubParams(gsParams),
 		pubsub.WithMessageIdFn(func(pmsg *pubsubpb.Message) string {
 			return p2p.MsgID(genesisValRoot, pmsg)
@@ -34,7 +38,11 @@ func NewGossipSub(ctx context.Context, h host.Host, genesisValRoot []byte, d int
 		pubsub.WithMaxMessageSize(int(params.BeaconConfig().MaxPayloadSize)),
 		pubsub.WithValidateQueueSize(256),
 		pubsub.WithPrometheusTracer(gossipLogFile),
-	)
+	}
+	if disableIHave {
+		opts = append(opts, pubsub.WithDisableIHaveGossip(true))
+	}
+	return pubsub.NewGossipSub(ctx, h, opts...)
 }
 
 // SubnetTopic returns the gossipsub topic string for an attestation subnet.

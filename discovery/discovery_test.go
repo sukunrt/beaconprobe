@@ -3,6 +3,7 @@ package discovery
 import (
 	"crypto/ecdsa"
 	"crypto/rand"
+	"strings"
 	"testing"
 
 	"github.com/OffchainLabs/prysm/v7/config/params"
@@ -12,7 +13,16 @@ import (
 	"github.com/ethereum/go-ethereum/p2p/enr"
 )
 
+type testNodeOpts struct {
+	tcpPort  int
+	quicPort int
+}
+
 func makeTestNode(t *testing.T, forkDigest [4]byte, attnets []byte) *enode.Node {
+	return makeTestNodeWithOpts(t, forkDigest, attnets, testNodeOpts{tcpPort: 9000})
+}
+
+func makeTestNodeWithOpts(t *testing.T, forkDigest [4]byte, attnets []byte, opts testNodeOpts) *enode.Node {
 	t.Helper()
 	privKey, err := ecdsa.GenerateKey(gcrypto.S256(), rand.Reader)
 	if err != nil {
@@ -27,7 +37,12 @@ func makeTestNode(t *testing.T, forkDigest [4]byte, attnets []byte) *enode.Node 
 
 	ln := enode.NewLocalNode(db, privKey)
 	ln.SetStaticIP([]byte{127, 0, 0, 1})
-	ln.Set(enr.TCP(9000))
+	if opts.tcpPort != 0 {
+		ln.Set(enr.TCP(opts.tcpPort))
+	}
+	if opts.quicPort != 0 {
+		ln.Set(quicProtocol(opts.quicPort))
+	}
 
 	// Set eth2 ENR entry.
 	enrForkID := &ethpb.ENRForkID{
@@ -190,3 +205,78 @@ func TestPeerShort(t *testing.T) {
 		}
 	}
 }
+
+func TestEnodeToAddrInfo_QUICPort(t *testing.T) {
+	fd := [4]byte{0x01, 0x02, 0x03, 0x04}
+	node := makeTestNodeWithOpts(t, fd, nil, testNodeOpts{tcpPort: 9000, quicPort: 9001})
+
+	info, err := enodeToAddrInfo(node)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info == nil {
+		t.Fatal("expected non-nil AddrInfo")
+	}
+
+	// Should have both QUIC and TCP addresses.
+	var hasQUIC, hasTCP bool
+	for _, addr := range info.Addrs {
+		s := addr.String()
+		if strings.Contains(s, "/quic-v1") {
+			hasQUIC = true
+			if !strings.Contains(s, "/udp/9001/") {
+				t.Errorf("QUIC addr has wrong port: %s", s)
+			}
+		}
+		if strings.Contains(s, "/tcp/9000") {
+			hasTCP = true
+		}
+	}
+	if !hasQUIC {
+		t.Error("expected QUIC address in AddrInfo")
+	}
+	if !hasTCP {
+		t.Error("expected TCP address in AddrInfo")
+	}
+}
+
+func TestEnodeToAddrInfo_QUICPortUsesCorrectENRKey(t *testing.T) {
+	// Verify that the QUIC port comes from the "quic" ENR key, not "udp".
+	fd := [4]byte{0x01, 0x02, 0x03, 0x04}
+	// Set QUIC port to 9001 and no explicit UDP port override.
+	// The discv5 UDP port is separate and should NOT be used for QUIC.
+	node := makeTestNodeWithOpts(t, fd, nil, testNodeOpts{tcpPort: 9000, quicPort: 9001})
+
+	info, err := enodeToAddrInfo(node)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, addr := range info.Addrs {
+		s := addr.String()
+		if strings.Contains(s, "/quic-v1") && !strings.Contains(s, "/udp/9001/") {
+			t.Errorf("QUIC address should use port 9001 from 'quic' ENR key, got: %s", s)
+		}
+	}
+}
+
+func TestEnodeToAddrInfo_TCPOnlyNode(t *testing.T) {
+	fd := [4]byte{0x01, 0x02, 0x03, 0x04}
+	// Node with TCP only, no QUIC port.
+	node := makeTestNodeWithOpts(t, fd, nil, testNodeOpts{tcpPort: 9000})
+
+	info, err := enodeToAddrInfo(node)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info == nil {
+		t.Fatal("expected non-nil AddrInfo for TCP-only node")
+	}
+
+	for _, addr := range info.Addrs {
+		if strings.Contains(addr.String(), "/quic-v1") {
+			t.Error("TCP-only node should not have QUIC address")
+		}
+	}
+}
+

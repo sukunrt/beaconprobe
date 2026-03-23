@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"strings"
 	"time"
 
 	"github.com/OffchainLabs/prysm/v7/config/params"
@@ -15,6 +16,7 @@ import (
 	"github.com/ethereum/go-ethereum/p2p/enode"
 	"github.com/ethereum/go-ethereum/p2p/enr"
 	"github.com/libp2p/go-libp2p/core/host"
+	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
 	ma "github.com/multiformats/go-multiaddr"
 	"github.com/sukunrt/beaconprobe/metrics"
@@ -24,10 +26,16 @@ const (
 	eth2EnrKey = "eth2"
 )
 
+// quicProtocol is the "quic" key, which holds the QUIC port of the node.
+type quicProtocol uint16
+
+func (quicProtocol) ENRKey() string { return "quic" }
+
 // Config holds discovery configuration.
 type Config struct {
 	PrivKey      *ecdsa.PrivateKey
 	DiscPort     uint
+	DiscV4Port   uint // If non-zero, also run a discv4 scanner on this port.
 	ForkDigest   [4]byte
 	SubnetIDs    []uint64
 	AttnetsBytes []byte
@@ -93,25 +101,47 @@ func StartDiscovery(ctx context.Context, h host.Host, cfg Config) error {
 	}
 	slog.Info("discv5 listener started")
 
-	// Run peer discovery loop.
-	go discoverPeers(ctx, h, listener, cfg)
+	// Run discv5 peer discovery loop.
+	go discoverPeers(ctx, h, listener.RandomNodes(), cfg)
+
+	// Optionally start discv4 scanner.
+	if cfg.DiscV4Port != 0 {
+		v4Addr := &net.UDPAddr{IP: net.IPv4zero, Port: int(cfg.DiscV4Port)}
+		v4Conn, err := net.ListenUDP("udp", v4Addr)
+		if err != nil {
+			return fmt.Errorf("listen udp v4: %w", err)
+		}
+		v4Listener, err := discover.ListenV4(v4Conn, localNode, dv5Cfg)
+		if err != nil {
+			return fmt.Errorf("listen discv4: %w", err)
+		}
+		slog.Info("discv4 listener started", "port", cfg.DiscV4Port)
+		go discoverPeers(ctx, h, v4Listener.RandomNodes(), cfg)
+	}
+
 	return nil
 }
 
-func discoverPeers(ctx context.Context, h host.Host, listener *discover.UDPv5, cfg Config) {
-	iterator := listener.RandomNodes()
-	defer iterator.Close()
+const maxConcurrentDials = 100
 
+func discoverPeers(ctx context.Context, h host.Host, iterator enode.Iterator, cfg Config) {
+	defer iterator.Close()
 	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
+
+	sem := make(chan struct{}, maxConcurrentDials)
 
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			slog.Info("connected peers", "peers", len(h.Network().Peers()))
-			metrics.ConnectedPeers.Set(float64(len(h.Network().Peers())))
+			quic, tcp := countPeersByTransport(h)
+			total := quic + tcp
+			slog.Info("connected peers", "total", total, "quic", quic, "tcp", tcp)
+			metrics.ConnectedPeers.Set(float64(total))
+			metrics.QUICPeers.Set(float64(quic))
+			metrics.TCPPeers.Set(float64(tcp))
 		default:
 		}
 
@@ -142,13 +172,28 @@ func discoverPeers(ctx context.Context, h host.Host, listener *discover.UDPv5, c
 			continue
 		}
 
-		connectCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-		if err := h.Connect(connectCtx, *addrInfo); err != nil {
-			slog.Debug("failed to connect", "peer", peerShort(addrInfo.ID), "error", err)
-		} else {
-			slog.Debug("connected to peer", "peer", peerShort(addrInfo.ID))
+		// Acquire semaphore slot.
+		select {
+		case sem <- struct{}{}:
+		case <-ctx.Done():
+			return
 		}
-		cancel()
+
+		go func(ai peer.AddrInfo) {
+			defer func() { <-sem }()
+			connectCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+			defer cancel()
+			if err := h.Connect(connectCtx, ai); err != nil {
+				slog.Debug("failed to connect", "peer", peerShort(ai.ID), "error", err)
+			} else {
+				conns := h.Network().ConnsToPeer(ai.ID)
+				var remoteAddr string
+				if len(conns) > 0 {
+					remoteAddr = conns[0].RemoteMultiaddr().String()
+				}
+				slog.Info("connected to peer", "peer", peerShort(ai.ID), "remote_addr", remoteAddr)
+			}
+		}(*addrInfo)
 	}
 }
 
@@ -202,51 +247,95 @@ func hasSubnetOverlap(node *enode.Node, subnetIDs []uint64) bool {
 }
 
 func enodeToAddrInfo(node *enode.Node) (*peer.AddrInfo, error) {
+	multiaddrs, err := retrieveMultiAddrsFromNode(node)
+	if err != nil {
+		return nil, err
+	}
+	if len(multiaddrs) == 0 {
+		return nil, nil
+	}
+	infos, err := peer.AddrInfosFromP2pAddrs(multiaddrs...)
+	if err != nil {
+		return nil, fmt.Errorf("could not convert to peer info: %v: %w", multiaddrs, err)
+	}
+	if len(infos) != 1 {
+		return nil, fmt.Errorf("infos contains %v elements, expected exactly 1", len(infos))
+	}
+	return &infos[0], nil
+}
+
+func retrieveMultiAddrsFromNode(node *enode.Node) ([]ma.Multiaddr, error) {
+	multiaddrs := make([]ma.Multiaddr, 0, 2)
+
 	pubkey := node.Pubkey()
 	if pubkey == nil {
 		return nil, fmt.Errorf("no pubkey")
 	}
-
-	libp2pKey, err := ecdsaprysm.ConvertToInterfacePubkey(pubkey)
+	assertedKey, err := ecdsaprysm.ConvertToInterfacePubkey(pubkey)
 	if err != nil {
-		return nil, fmt.Errorf("convert pubkey: %w", err)
+		return nil, fmt.Errorf("could not get pubkey: %w", err)
+	}
+	id, err := peer.IDFromPublicKey(assertedKey)
+	if err != nil {
+		return nil, fmt.Errorf("could not get peer id: %w", err)
 	}
 
-	peerID, err := peer.IDFromPublicKey(libp2pKey)
-	if err != nil {
-		return nil, fmt.Errorf("peer id: %w", err)
-	}
-
-	var multiaddrs []ma.Multiaddr
 	ip := node.IP()
 	if ip == nil {
 		return nil, nil
 	}
-
-	// Try QUIC first (port from ENR "quic" key).
-	var quicPort enr.UDP
-	if err := node.Record().Load(&quicPort); err == nil && quicPort != 0 {
-		addr, err := ma.NewMultiaddr(fmt.Sprintf("/ip4/%s/udp/%d/quic-v1", ip.String(), quicPort))
-		if err == nil {
-			multiaddrs = append(multiaddrs, addr)
-		}
+	ipType := "ip4"
+	if ip.To4() == nil && ip.To16() != nil {
+		ipType = "ip6"
 	}
 
-	// TCP fallback.
+	// If the QUIC entry is present in the ENR, build the corresponding multiaddress.
+	var qp quicProtocol
+	if err := node.Load(&qp); err == nil && qp != 0 {
+		addr, err := ma.NewMultiaddr(fmt.Sprintf("/%s/%s/udp/%d/quic-v1/p2p/%s", ipType, ip, qp, id))
+		if err != nil {
+			return nil, fmt.Errorf("could not build QUIC address: %w", err)
+		}
+		multiaddrs = append(multiaddrs, addr)
+	}
+
+	// If the TCP entry is present in the ENR, build the corresponding multiaddress.
 	tcpPort := node.TCP()
 	if tcpPort != 0 {
-		addr, err := ma.NewMultiaddr(fmt.Sprintf("/ip4/%s/tcp/%d", ip.String(), tcpPort))
-		if err == nil {
-			multiaddrs = append(multiaddrs, addr)
+		addr, err := ma.NewMultiaddr(fmt.Sprintf("/%s/%s/tcp/%d/p2p/%s", ipType, ip, tcpPort, id))
+		if err != nil {
+			return nil, fmt.Errorf("could not build TCP address: %w", err)
+		}
+		multiaddrs = append(multiaddrs, addr)
+	}
+
+	return multiaddrs, nil
+}
+
+// isQUICConn returns true if the connection uses the QUIC transport.
+// RemoteMultiaddr() for QUIC connections is /ip4/x.x.x.x/udp/port (no /quic-v1 suffix),
+// so we detect QUIC by checking for /udp/ and absence of /tcp/.
+func isQUICConn(c network.Conn) bool {
+	s := c.RemoteMultiaddr().String()
+	return strings.Contains(s, "/udp/")
+}
+
+// countPeersByTransport returns the count of QUIC and TCP peers.
+func countPeersByTransport(h host.Host) (quic, tcp int) {
+	for _, p := range h.Network().Peers() {
+		conns := h.Network().ConnsToPeer(p)
+		isQUIC := false
+		for _, c := range conns {
+			if isQUICConn(c) {
+				isQUIC = true
+				break
+			}
+		}
+		if isQUIC {
+			quic++
+		} else {
+			tcp++
 		}
 	}
-
-	if len(multiaddrs) == 0 {
-		return nil, nil
-	}
-
-	return &peer.AddrInfo{
-		ID:    peerID,
-		Addrs: multiaddrs,
-	}, nil
+	return
 }
