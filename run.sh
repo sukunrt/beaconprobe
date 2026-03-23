@@ -1,5 +1,5 @@
 #!/bin/bash
-RUN=run11
+RUN=run12
 mkdir -p /storage/beaconnode/$RUN
 go run . \
   --tcp-port 13456 \

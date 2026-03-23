@@ -103,7 +103,7 @@ func main() {
 	if *logFilePath != "" {
 		gossipLogFile = filepath.Join(filepath.Dir(*logFilePath), "gossipsub-logs.log")
 	}
-	ps, err := node.NewGossipSub(ctx, h, genesisValRoot, *gossipD, *disableIHave, gossipLogFile)
+	ps, err := node.NewGossipSub(ctx, h, genesisValRoot, *gossipD, *disableIHave, forkDigest, subnetIDs, gossipLogFile)
 	if err != nil {
 		slog.Error("failed to create gossipsub", "error", err)
 		os.Exit(1)
@@ -146,6 +146,7 @@ func main() {
 		SubnetIDs:    subnetIDs,
 		AttnetsBytes: attnetsBytes,
 		DiscV4Port:   *discV4Port,
+		QuicOnly:     *quicOnly,
 	}
 	if err := discovery.StartDiscovery(ctx, h, discCfg); err != nil {
 		slog.Error("failed to start discovery", "error", err)

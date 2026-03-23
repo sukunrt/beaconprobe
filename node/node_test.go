@@ -118,7 +118,7 @@ func TestNewGossipSub(t *testing.T) {
 	ctx := t.Context()
 
 	genesisValRoot := make([]byte, 32)
-	ps, err := NewGossipSub(ctx, h, genesisValRoot, 8, false, filepath.Join(t.TempDir(), "gossipsub.log"))
+	ps, err := NewGossipSub(ctx, h, genesisValRoot, 8, false, [4]byte{}, []uint64{0}, filepath.Join(t.TempDir(), "gossipsub.log"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -132,7 +132,7 @@ func TestNewGossipSub_HighD(t *testing.T) {
 	ctx := t.Context()
 
 	genesisValRoot := make([]byte, 32)
-	ps, err := NewGossipSub(ctx, h, genesisValRoot, 10000, false, filepath.Join(t.TempDir(), "gossipsub.log"))
+	ps, err := NewGossipSub(ctx, h, genesisValRoot, 10000, false, [4]byte{}, []uint64{0}, filepath.Join(t.TempDir(), "gossipsub.log"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -146,7 +146,7 @@ func TestSubscribeSubnets(t *testing.T) {
 	ctx := t.Context()
 
 	genesisValRoot := make([]byte, 32)
-	ps, err := NewGossipSub(ctx, h, genesisValRoot, 8, false, filepath.Join(t.TempDir(), "gossipsub.log"))
+	ps, err := NewGossipSub(ctx, h, genesisValRoot, 8, false, [4]byte{}, []uint64{0}, filepath.Join(t.TempDir(), "gossipsub.log"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -180,7 +180,7 @@ func TestSubscribeSubnets_Empty(t *testing.T) {
 	ctx := t.Context()
 
 	genesisValRoot := make([]byte, 32)
-	ps, err := NewGossipSub(ctx, h, genesisValRoot, 8, false, filepath.Join(t.TempDir(), "gossipsub.log"))
+	ps, err := NewGossipSub(ctx, h, genesisValRoot, 8, false, [4]byte{}, []uint64{0}, filepath.Join(t.TempDir(), "gossipsub.log"))
 	if err != nil {
 		t.Fatal(err)
 	}

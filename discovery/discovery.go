@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/OffchainLabs/prysm/v7/config/params"
@@ -39,6 +40,7 @@ type Config struct {
 	ForkDigest   [4]byte
 	SubnetIDs    []uint64
 	AttnetsBytes []byte
+	QuicOnly     bool
 }
 
 // StartDiscovery starts discv5 and a peer connection loop.
@@ -122,7 +124,7 @@ func StartDiscovery(ctx context.Context, h host.Host, cfg Config) error {
 	return nil
 }
 
-const maxConcurrentDials = 100
+const maxConcurrentDials = 500
 
 func discoverPeers(ctx context.Context, h host.Host, iterator enode.Iterator, cfg Config) {
 	defer iterator.Close()
@@ -130,6 +132,7 @@ func discoverPeers(ctx context.Context, h host.Host, iterator enode.Iterator, cf
 	defer ticker.Stop()
 
 	sem := make(chan struct{}, maxConcurrentDials)
+	var inFlightDials atomic.Int64
 
 	for {
 		select {
@@ -138,7 +141,7 @@ func discoverPeers(ctx context.Context, h host.Host, iterator enode.Iterator, cf
 		case <-ticker.C:
 			quic, tcp := countPeersByTransport(h)
 			total := quic + tcp
-			slog.Info("connected peers", "total", total, "quic", quic, "tcp", tcp)
+			slog.Info("connected peers", "total", total, "quic", quic, "tcp", tcp, "in_flight_dials", inFlightDials.Load())
 			metrics.ConnectedPeers.Set(float64(total))
 			metrics.QUICPeers.Set(float64(quic))
 			metrics.TCPPeers.Set(float64(tcp))
@@ -167,8 +170,13 @@ func discoverPeers(ctx context.Context, h host.Host, iterator enode.Iterator, cf
 			continue
 		}
 
+		// In quic-only mode, skip peers that have no QUIC address.
+		if cfg.QuicOnly && !hasQUICAddr(addrInfo) {
+			continue
+		}
+
 		// Don't reconnect to already-connected peers.
-		if h.Network().Connectedness(addrInfo.ID) == 1 {
+		if h.Network().Connectedness(addrInfo.ID) == network.Connected {
 			continue
 		}
 
@@ -180,11 +188,12 @@ func discoverPeers(ctx context.Context, h host.Host, iterator enode.Iterator, cf
 		}
 
 		go func(ai peer.AddrInfo) {
-			defer func() { <-sem }()
+			inFlightDials.Add(1)
+			defer func() { inFlightDials.Add(-1); <-sem }()
 			connectCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 			defer cancel()
 			if err := h.Connect(connectCtx, ai); err != nil {
-				slog.Debug("failed to connect", "peer", peerShort(ai.ID), "error", err)
+				slog.Info("failed to connect", "peer", peerShort(ai.ID), "error", err)
 			} else {
 				conns := h.Network().ConnsToPeer(ai.ID)
 				var remoteAddr string
@@ -310,6 +319,16 @@ func retrieveMultiAddrsFromNode(node *enode.Node) ([]ma.Multiaddr, error) {
 	}
 
 	return multiaddrs, nil
+}
+
+// hasQUICAddr returns true if the AddrInfo contains at least one QUIC address.
+func hasQUICAddr(ai *peer.AddrInfo) bool {
+	for _, addr := range ai.Addrs {
+		if strings.Contains(addr.String(), "/quic-v1") {
+			return true
+		}
+	}
+	return false
 }
 
 // isQUICConn returns true if the connection uses the QUIC transport.

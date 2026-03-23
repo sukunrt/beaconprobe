@@ -18,7 +18,7 @@ const gossipSubHeartbeatInterval = 700 * time.Millisecond
 
 // NewGossipSub creates a gossipsub instance configured with eth2 parameters.
 // d sets the target mesh degree; Dlo and Dhi are derived from it.
-func NewGossipSub(ctx context.Context, h host.Host, genesisValRoot []byte, d int, disableIHave bool, gossipLogFile string) (*pubsub.PubSub, error) {
+func NewGossipSub(ctx context.Context, h host.Host, genesisValRoot []byte, d int, disableIHave bool, forkDigest [4]byte, subnetIDs []uint64, gossipLogFile string) (*pubsub.PubSub, error) {
 	gsParams := pubsub.DefaultGossipSubParams()
 	gsParams.D = d
 	gsParams.Dlo = max(d-2, 1)
@@ -29,7 +29,15 @@ func NewGossipSub(ctx context.Context, h host.Host, genesisValRoot []byte, d int
 	gsParams.HistoryLength = 6
 	gsParams.HistoryGossip = 3
 
+	// Pre-populate topic score params for all attestation subnets.
+	topicScores := make(map[string]*pubsub.TopicScoreParams, len(subnetIDs))
+	for _, id := range subnetIDs {
+		topicScores[SubnetTopic(forkDigest, id)] = AttestationTopicScoreParams()
+	}
+	scoreParams, scoreThresholds := PeerScoreConfig(topicScores)
+
 	opts := []pubsub.Option{
+		pubsub.WithPeerScore(scoreParams, scoreThresholds),
 		pubsub.WithGossipSubParams(gsParams),
 		pubsub.WithMessageIdFn(func(pmsg *pubsubpb.Message) string {
 			return p2p.MsgID(genesisValRoot, pmsg)

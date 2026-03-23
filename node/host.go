@@ -10,8 +10,10 @@ import (
 	gcrypto "github.com/ethereum/go-ethereum/crypto"
 	"github.com/libp2p/go-libp2p"
 	mplex "github.com/libp2p/go-libp2p-mplex"
+	"github.com/libp2p/go-libp2p/core/connmgr"
 	"github.com/libp2p/go-libp2p/core/crypto"
 	"github.com/libp2p/go-libp2p/core/host"
+	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/p2p/muxer/yamux"
 	"github.com/libp2p/go-libp2p/p2p/security/noise"
 	libp2pquic "github.com/libp2p/go-libp2p/p2p/transport/quic"
@@ -36,6 +38,8 @@ func NewHost(tcpPort, quicPort uint, keyFile string, quicOnly bool) (host.Host, 
 		libp2p.Identity(libp2pKey),
 		libp2p.Security(noise.ID, noise.New),
 		libp2p.DisableRelay(),
+		libp2p.ResourceManager(&network.NullResourceManager{}),
+		libp2p.ConnectionManager(&connmgr.NullConnMgr{}),
 	}
 
 	if quicOnly {
