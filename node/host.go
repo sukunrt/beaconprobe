@@ -53,12 +53,15 @@ func NewHost(tcpPort, quicPort uint, keyFile string) (host.Host, *ecdsa.PrivateK
 	return h, privKey, nil
 }
 
-// loadOrGenerateKey loads a hex-encoded secp256k1 private key from keyFile,
+// loadOrGenerateKey loads a secp256k1 private key from keyFile,
 // or generates a new one (saving it to keyFile if non-empty).
-// File format matches prysm's beacon-chain/p2p/utils.go.
+// Accepts both raw 32-byte and hex-encoded 64-byte key files.
 func loadOrGenerateKey(keyFile string) (*ecdsa.PrivateKey, error) {
 	if keyFile != "" {
 		if src, err := os.ReadFile(keyFile); err == nil {
+			if len(src) == 32 {
+				return gcrypto.ToECDSA(src)
+			}
 			raw := make([]byte, hex.DecodedLen(len(src)))
 			if _, err := hex.Decode(raw, src); err != nil {
 				return nil, fmt.Errorf("decode key hex: %w", err)
