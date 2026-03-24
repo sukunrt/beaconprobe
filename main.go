@@ -90,7 +90,10 @@ func main() {
 		slog.Info("listening", "addr", addr.String())
 	}
 
-	// 3. Register RPC handlers (before discovery so peers can handshake).
+	// 3. Track peer user agents via identify events.
+	go node.TrackUserAgents(ctx, h)
+
+	// 4. Register RPC handlers (before discovery so peers can handshake).
 	attnetsBytes := rpc.MakeAttnetsBytes(subnetIDs)
 	statusProvider := rpc.MakeStatusProvider(forkDigest)
 	rpc.RegisterHandlers(h, statusProvider, attnetsBytes)

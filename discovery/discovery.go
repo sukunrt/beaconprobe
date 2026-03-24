@@ -97,6 +97,7 @@ func StartDiscovery(ctx context.Context, h host.Host, cfg Config) error {
 		PrivateKey: cfg.PrivKey,
 		Bootnodes:  bootNodes,
 	}
+
 	listener, err := discover.ListenV5(conn, localNode, dv5Cfg)
 	if err != nil {
 		return fmt.Errorf("listen discv5: %w", err)

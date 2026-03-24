@@ -22,6 +22,7 @@ node/
   host.go            # libp2p host creation (TCP/QUIC, noise, yamux+mplex)
   gossipsub.go       # Gossipsub setup with eth2-specific parameters
   attestation.go     # Attestation subscription and latency measurement
+  useragent.go       # Peer user agent tracking via identify events + Prometheus gauge
 discovery/
   discovery.go       # discv5 peer discovery, fork digest filtering, connection loop
 rpc/

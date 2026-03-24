@@ -78,6 +78,14 @@ var (
 			Help: "Number of peers connected via TCP",
 		},
 	)
+
+	PeerUserAgents = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "beaconprobe_peer_user_agents",
+			Help: "Number of connected peers by user agent",
+		},
+		[]string{"user_agent"},
+	)
 )
 
 func init() {
@@ -91,6 +99,7 @@ func init() {
 		DiscoveryPeersFound,
 		QUICPeers,
 		TCPPeers,
+		PeerUserAgents,
 	)
 }
 
