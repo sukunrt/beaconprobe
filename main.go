@@ -35,7 +35,14 @@ func main() {
 	keyFile := flag.String("key-file", "", "path to persist node private key (reuse peer ID across restarts)")
 	quicOnly := flag.Bool("quic-only", false, "only use QUIC transport (disable TCP/yamux entirely)")
 	disableIHave := flag.Bool("disable-ihave", false, "disable gossipsub IHAVE gossip")
+	crawlFile := flag.String("crawl", "", "crawl mode: discover all peers and write ENRs to this file")
+	bootstrapFile := flag.String("bootstrap-file", "", "path to ENR file for direct-dialing peers at startup")
 	flag.Parse()
+
+	if *crawlFile != "" && *bootstrapFile != "" {
+		slog.Error("--crawl and --bootstrap-file are mutually exclusive")
+		os.Exit(1)
+	}
 
 	var slogLevel slog.Level
 	if err := slogLevel.UnmarshalText([]byte(*logLevel)); err != nil {
@@ -52,6 +59,14 @@ func main() {
 	if err != nil {
 		slog.Error("invalid subnets flag", "error", err)
 		os.Exit(1)
+	}
+
+	// In crawl mode, advertise all 64 subnets to attract maximum peers.
+	if *crawlFile != "" {
+		subnetIDs = make([]uint64, 64)
+		for i := range subnetIDs {
+			subnetIDs[i] = uint64(i)
+		}
 	}
 
 	// Use mainnet config.
@@ -100,46 +115,48 @@ func main() {
 	rpc.SendStatusOnConnect(h, statusProvider)
 	slog.Info("RPC handlers registered")
 
-	// 4. Create gossipsub with eth2 params.
-	genesisValRoot := cfg.GenesisValidatorsRoot[:]
-	gossipLogFile := "gossipsub-logs.log"
-	if *logFilePath != "" {
-		gossipLogFile = filepath.Join(filepath.Dir(*logFilePath), "gossipsub-logs.log")
-	}
-	ps, err := node.NewGossipSub(ctx, h, genesisValRoot, *gossipD, *disableIHave, forkDigest, subnetIDs, gossipLogFile)
-	if err != nil {
-		slog.Error("failed to create gossipsub", "error", err)
-		os.Exit(1)
-	}
-
-	// 5. Subscribe to attestation subnet topics.
-	subs, err := node.SubscribeSubnets(ps, forkDigest, subnetIDs)
-	if err != nil {
-		slog.Error("failed to subscribe to subnets", "error", err)
-		os.Exit(1)
-	}
-	for _, s := range subs {
-		slog.Info("subscribed to subnet",
-			"subnet", s.SubnetID,
-			"topic", node.SubnetTopic(forkDigest, s.SubnetID),
-		)
-	}
-
-	// 6. Start attestation listener goroutines.
-	var fileLogger *slog.Logger
-	if *logFilePath != "" {
-		f, err := os.OpenFile(*logFilePath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	// 4-6. Gossipsub and attestation listening (skipped in crawl mode).
+	if *crawlFile == "" {
+		genesisValRoot := cfg.GenesisValidatorsRoot[:]
+		gossipLogFile := "gossipsub-logs.log"
+		if *logFilePath != "" {
+			gossipLogFile = filepath.Join(filepath.Dir(*logFilePath), "gossipsub-logs.log")
+		}
+		ps, err := node.NewGossipSub(ctx, h, genesisValRoot, *gossipD, *disableIHave, forkDigest, subnetIDs, gossipLogFile)
 		if err != nil {
-			slog.Error("failed to open log file", "path", *logFilePath, "error", err)
+			slog.Error("failed to create gossipsub", "error", err)
 			os.Exit(1)
 		}
-		defer f.Close()
-		fileLogger = slog.New(slog.NewTextHandler(f, &slog.HandlerOptions{
-			ReplaceAttr: replaceTimeAttr,
-		}))
-		slog.Info("logging attestations to file", "path", *logFilePath)
+
+		subs, err := node.SubscribeSubnets(ps, forkDigest, subnetIDs)
+		if err != nil {
+			slog.Error("failed to subscribe to subnets", "error", err)
+			os.Exit(1)
+		}
+		for _, s := range subs {
+			slog.Info("subscribed to subnet",
+				"subnet", s.SubnetID,
+				"topic", node.SubnetTopic(forkDigest, s.SubnetID),
+			)
+		}
+
+		var fileLogger *slog.Logger
+		if *logFilePath != "" {
+			f, err := os.OpenFile(*logFilePath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+			if err != nil {
+				slog.Error("failed to open log file", "path", *logFilePath, "error", err)
+				os.Exit(1)
+			}
+			defer f.Close()
+			fileLogger = slog.New(slog.NewTextHandler(f, &slog.HandlerOptions{
+				ReplaceAttr: replaceTimeAttr,
+			}))
+			slog.Info("logging attestations to file", "path", *logFilePath)
+		}
+		node.ListenForAttestations(ctx, subs, genesisTime, fileLogger)
+	} else {
+		slog.Info("crawl mode: skipping gossipsub and attestation listener")
 	}
-	node.ListenForAttestations(ctx, subs, genesisTime, fileLogger)
 
 	// 7. Start discv5 discovery + peer connection loop.
 	discCfg := discovery.Config{
@@ -150,10 +167,22 @@ func main() {
 		AttnetsBytes: attnetsBytes,
 		DiscV4Port:   *discV4Port,
 		QuicOnly:     *quicOnly,
+		CrawlFile:    *crawlFile,
 	}
-	if err := discovery.StartDiscovery(ctx, h, discCfg); err != nil {
+	discv5Listener, err := discovery.StartDiscovery(ctx, h, discCfg)
+	if err != nil {
 		slog.Error("failed to start discovery", "error", err)
 		os.Exit(1)
+	}
+
+	// 7b. If bootstrap file provided, refresh ENRs via discv5 and dial matching peers.
+	if *bootstrapFile != "" {
+		go func() {
+			for {
+				discovery.DialBootstrapPeers(ctx, h, discv5Listener, *bootstrapFile, forkDigest, subnetIDs, *quicOnly)
+				time.Sleep(60 * time.Second)
+			}
+		}()
 	}
 
 	// 8. Wait for shutdown signal.

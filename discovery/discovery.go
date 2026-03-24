@@ -1,12 +1,16 @@
 package discovery
 
 import (
+	"bufio"
 	"context"
 	"crypto/ecdsa"
 	"fmt"
 	"log/slog"
 	"net"
+	"os"
+	"slices"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -41,14 +45,16 @@ type Config struct {
 	SubnetIDs    []uint64
 	AttnetsBytes []byte
 	QuicOnly     bool
+	CrawlFile    string // If non-empty, run in crawl mode and write ENRs to this file.
 }
 
 // StartDiscovery starts discv5 and a peer connection loop.
-func StartDiscovery(ctx context.Context, h host.Host, cfg Config) error {
+// It returns the discv5 listener so callers can use it for ENR lookups.
+func StartDiscovery(ctx context.Context, h host.Host, cfg Config) (*discover.UDPv5, error) {
 	// Create local ENR node.
 	db, err := enode.OpenDB("")
 	if err != nil {
-		return fmt.Errorf("open enode db: %w", err)
+		return nil, fmt.Errorf("open enode db: %w", err)
 	}
 	localNode := enode.NewLocalNode(db, cfg.PrivKey)
 
@@ -64,7 +70,7 @@ func StartDiscovery(ctx context.Context, h host.Host, cfg Config) error {
 	}
 	enrForkIDBytes, err := enrForkID.MarshalSSZ()
 	if err != nil {
-		return fmt.Errorf("marshal ENR fork ID: %w", err)
+		return nil, fmt.Errorf("marshal ENR fork ID: %w", err)
 	}
 	localNode.Set(enr.WithEntry(eth2EnrKey, enrForkIDBytes))
 
@@ -89,7 +95,7 @@ func StartDiscovery(ctx context.Context, h host.Host, cfg Config) error {
 	udpAddr := &net.UDPAddr{IP: net.IPv4zero, Port: int(cfg.DiscPort)}
 	conn, err := net.ListenUDP("udp", udpAddr)
 	if err != nil {
-		return fmt.Errorf("listen udp: %w", err)
+		return nil, fmt.Errorf("listen udp: %w", err)
 	}
 
 	// Start discv5 listener.
@@ -100,32 +106,39 @@ func StartDiscovery(ctx context.Context, h host.Host, cfg Config) error {
 
 	listener, err := discover.ListenV5(conn, localNode, dv5Cfg)
 	if err != nil {
-		return fmt.Errorf("listen discv5: %w", err)
+		return nil, fmt.Errorf("listen discv5: %w", err)
 	}
 	slog.Info("discv5 listener started")
 
-	// Run discv5 peer discovery loop.
-	go discoverPeers(ctx, h, listener.RandomNodes(), cfg)
+	// Run discv5 peer discovery loop with fork digest pre-filter.
+	forkFilter := enode.Filter(listener.RandomNodes(), func(n *enode.Node) bool {
+		return matchesForkDigest(n, cfg.ForkDigest)
+	})
+	go discoverPeers(ctx, h, forkFilter, cfg)
 
 	// Optionally start discv4 scanner.
 	if cfg.DiscV4Port != 0 {
 		v4Addr := &net.UDPAddr{IP: net.IPv4zero, Port: int(cfg.DiscV4Port)}
 		v4Conn, err := net.ListenUDP("udp", v4Addr)
 		if err != nil {
-			return fmt.Errorf("listen udp v4: %w", err)
+			return nil, fmt.Errorf("listen udp v4: %w", err)
 		}
 		v4Listener, err := discover.ListenV4(v4Conn, localNode, dv5Cfg)
 		if err != nil {
-			return fmt.Errorf("listen discv4: %w", err)
+			return nil, fmt.Errorf("listen discv4: %w", err)
 		}
 		slog.Info("discv4 listener started", "port", cfg.DiscV4Port)
-		go discoverPeers(ctx, h, v4Listener.RandomNodes(), cfg)
+		v4ForkFilter := enode.Filter(v4Listener.RandomNodes(), func(n *enode.Node) bool {
+			return matchesForkDigest(n, cfg.ForkDigest)
+		})
+		go discoverPeers(ctx, h, v4ForkFilter, cfg)
 	}
 
-	return nil
+	return listener, nil
 }
 
 const maxConcurrentDials = 500
+const dialTimeout = 4 * time.Second
 
 func discoverPeers(ctx context.Context, h host.Host, iterator enode.Iterator, cfg Config) {
 	defer iterator.Close()
@@ -134,6 +147,18 @@ func discoverPeers(ctx context.Context, h host.Host, iterator enode.Iterator, cf
 
 	sem := make(chan struct{}, maxConcurrentDials)
 	var inFlightDials atomic.Int64
+
+	// Crawl mode: open file for appending ENRs and track seen peers.
+	var crawlWriter *crawlFileWriter
+	if cfg.CrawlFile != "" {
+		var err error
+		crawlWriter, err = newCrawlFileWriter(cfg.CrawlFile)
+		if err != nil {
+			slog.Error("failed to open crawl file", "path", cfg.CrawlFile, "error", err)
+			return
+		}
+		defer crawlWriter.Close()
+	}
 
 	for {
 		select {
@@ -155,14 +180,11 @@ func discoverPeers(ctx context.Context, h host.Host, iterator enode.Iterator, cf
 		node := iterator.Node()
 		metrics.DiscoveryPeersFound.Inc()
 
-		// Check eth2 ENR entry matches our fork digest.
-		if !matchesForkDigest(node, cfg.ForkDigest) {
-			continue
-		}
-
-		// Check attnets overlap with our target subnets.
-		if !hasSubnetOverlap(node, cfg.SubnetIDs) {
-			continue
+		// In crawl mode, skip subnet overlap check to discover all peers.
+		if cfg.CrawlFile == "" {
+			if !hasSubnetOverlap(node, cfg.SubnetIDs) {
+				continue
+			}
 		}
 
 		// Convert enode to libp2p AddrInfo and connect.
@@ -181,6 +203,11 @@ func discoverPeers(ctx context.Context, h host.Host, iterator enode.Iterator, cf
 			continue
 		}
 
+		// In crawl mode, skip peers we've already seen (dedup across discv4/v5).
+		if crawlWriter != nil && crawlWriter.HasPeer(addrInfo.ID) {
+			continue
+		}
+
 		// Acquire semaphore slot.
 		select {
 		case sem <- struct{}{}:
@@ -188,11 +215,12 @@ func discoverPeers(ctx context.Context, h host.Host, iterator enode.Iterator, cf
 			return
 		}
 
-		go func(ai peer.AddrInfo) {
+		go func(ai peer.AddrInfo, n *enode.Node) {
 			inFlightDials.Add(1)
 			defer func() { inFlightDials.Add(-1); <-sem }()
-			connectCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+			connectCtx, cancel := context.WithTimeout(ctx, dialTimeout)
 			defer cancel()
+			connectCtx = network.WithDialPeerTimeout(connectCtx, dialTimeout)
 			if err := h.Connect(connectCtx, ai); err != nil {
 				slog.Info("failed to connect", "peer", peerShort(ai.ID), "error", err)
 			} else {
@@ -202,8 +230,11 @@ func discoverPeers(ctx context.Context, h host.Host, iterator enode.Iterator, cf
 					remoteAddr = conns[0].RemoteMultiaddr().String()
 				}
 				slog.Info("connected to peer", "peer", peerShort(ai.ID), "remote_addr", remoteAddr)
+				if crawlWriter != nil {
+					crawlWriter.WriteENR(ai.ID, n.String())
+				}
 			}
-		}(*addrInfo)
+		}(*addrInfo, node)
 	}
 }
 
@@ -340,17 +371,143 @@ func isQUICConn(c network.Conn) bool {
 	return strings.Contains(s, "/udp/")
 }
 
+// crawlFileWriter writes ENRs to a file with deduplication.
+type crawlFileWriter struct {
+	mu   sync.Mutex
+	f    *os.File
+	w    *bufio.Writer
+	seen map[peer.ID]struct{}
+}
+
+func newCrawlFileWriter(path string) (*crawlFileWriter, error) {
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	if err != nil {
+		return nil, err
+	}
+	return &crawlFileWriter{
+		f:    f,
+		w:    bufio.NewWriter(f),
+		seen: make(map[peer.ID]struct{}),
+	}, nil
+}
+
+func (c *crawlFileWriter) HasPeer(id peer.ID) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	_, ok := c.seen[id]
+	return ok
+}
+
+func (c *crawlFileWriter) WriteENR(id peer.ID, enrStr string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if _, ok := c.seen[id]; ok {
+		return
+	}
+	c.seen[id] = struct{}{}
+	fmt.Fprintln(c.w, enrStr)
+	c.w.Flush()
+	slog.Info("crawl: wrote ENR", "peer", peerShort(id), "total", len(c.seen))
+}
+
+func (c *crawlFileWriter) Close() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.w.Flush()
+	return c.f.Close()
+}
+
+// DialBootstrapPeers reads ENRs from a file, refreshes each via discv5
+// RequestENR to get current subnet subscriptions, filters by subnet overlap,
+// and dials matching peers concurrently.
+func DialBootstrapPeers(
+	ctx context.Context,
+	h host.Host,
+	listener *discover.UDPv5,
+	filePath string,
+	forkDigest [4]byte,
+	subnetIDs []uint64,
+	quicOnly bool,
+) {
+	f, err := os.Open(filePath)
+	if err != nil {
+		slog.Error("failed to open bootstrap file", "path", filePath, "error", err)
+		return
+	}
+	defer f.Close()
+
+	sem := make(chan struct{}, maxConcurrentDials)
+
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" {
+			continue
+		}
+
+		node, err := enode.Parse(enode.ValidSchemes, line)
+		if err != nil {
+			slog.Debug("bootstrap: failed to parse ENR", "error", err)
+			continue
+		}
+		select {
+		case sem <- struct{}{}:
+		case <-ctx.Done():
+			return
+		}
+		func() {
+			defer func() { <-sem }()
+
+			// Refresh ENR via discv5 to get current subnet subscriptions.
+			freshNode, err := listener.RequestENR(node)
+			if err != nil {
+				slog.Debug("bootstrap: failed to refresh ENR", "peer", node.ID().TerminalString(), "error", err)
+				// Fall back to the stale ENR from the file.
+				freshNode = node
+			}
+
+			if !matchesForkDigest(freshNode, forkDigest) {
+				return
+			}
+
+			if !hasSubnetOverlap(freshNode, subnetIDs) {
+				return
+			}
+
+			addrInfo, err := enodeToAddrInfo(freshNode)
+			if err != nil || addrInfo == nil {
+				return
+			}
+
+			if quicOnly && !hasQUICAddr(addrInfo) {
+				return
+			}
+
+			if h.Network().Connectedness(addrInfo.ID) == network.Connected {
+				return
+			}
+
+			dial := func(ai peer.AddrInfo) {
+				connectCtx, cancel := context.WithTimeout(ctx, dialTimeout)
+				defer cancel()
+				connectCtx = network.WithDialPeerTimeout(connectCtx, dialTimeout)
+				if err := h.Connect(connectCtx, ai); err != nil {
+					slog.Debug("bootstrap: failed to connect", "peer", peerShort(ai.ID), "error", err)
+				} else {
+					slog.Info("bootstrap: connected", "peer", peerShort(ai.ID))
+				}
+			}
+			dial(*addrInfo)
+		}()
+	}
+	slog.Info("bootstrap: finished reading file")
+}
+
 // countPeersByTransport returns the count of QUIC and TCP peers.
 func countPeersByTransport(h host.Host) (quic, tcp int) {
 	for _, p := range h.Network().Peers() {
 		conns := h.Network().ConnsToPeer(p)
-		isQUIC := false
-		for _, c := range conns {
-			if isQUICConn(c) {
-				isQUIC = true
-				break
-			}
-		}
+		isQUIC := slices.ContainsFunc(conns, isQUICConn)
 		if isQUIC {
 			quic++
 		} else {

@@ -40,6 +40,8 @@ func NewHost(tcpPort, quicPort uint, keyFile string, quicOnly bool) (host.Host, 
 		libp2p.DisableRelay(),
 		libp2p.ResourceManager(&network.NullResourceManager{}),
 		libp2p.ConnectionManager(&connmgr.NullConnMgr{}),
+		libp2p.UDPBlackHoleSuccessCounter(nil),
+		libp2p.IPv6BlackHoleSuccessCounter(nil),
 	}
 
 	if quicOnly {

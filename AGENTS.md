@@ -7,12 +7,15 @@ Beaconprobe is a passive Ethereum beacon chain observer. It joins the eth2 P2P n
 ## Build and Test
 
 ```bash
-go build ./...       # build
-go test ./...        # run all tests
-go run .             # run with default flags
+go build ./...              # build
+go test ./...               # run all tests
+go fix -fix modernize ./... # ALWAYS run this before finishing — applies modern Go idioms
+go run .                    # run with default flags
 ```
 
 Go 1.25+ required. No Makefile — use standard Go tooling.
+
+**IMPORTANT**: Always run `go fix -fix modernize ./...` after making changes. This is not optional.
 
 ## Project Structure
 

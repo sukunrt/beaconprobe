@@ -14,4 +14,5 @@ go run . \
   --quic-only \
   --gossip-d 1000 \
   --disable-ihave \
+  --bootstrap-file /storage/beaconnode/crawl3/peers.enr \
   > /storage/beaconnode/$RUN/run.log 2>&1
