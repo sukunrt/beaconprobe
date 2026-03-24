@@ -37,6 +37,7 @@ func main() {
 	disableIHave := flag.Bool("disable-ihave", false, "disable gossipsub IHAVE gossip")
 	crawlFile := flag.String("crawl", "", "crawl mode: discover all peers and write ENRs to this file")
 	bootstrapFile := flag.String("bootstrap-file", "", "path to ENR file for direct-dialing peers at startup")
+	listenBlocks := flag.Bool("listen-blocks", true, "subscribe to beacon block topic and measure attestation latency relative to block arrival")
 	flag.Parse()
 
 	if *crawlFile != "" && *bootstrapFile != "" {
@@ -115,7 +116,7 @@ func main() {
 	rpc.SendStatusOnConnect(h, statusProvider)
 	slog.Info("RPC handlers registered")
 
-	// 4-6. Gossipsub and attestation listening (skipped in crawl mode).
+	// 5. Gossipsub and attestation listening (skipped in crawl mode).
 	if *crawlFile == "" {
 		genesisValRoot := cfg.GenesisValidatorsRoot[:]
 		gossipLogFile := "gossipsub-logs.log"
@@ -140,6 +141,7 @@ func main() {
 			)
 		}
 
+		// Set up file logger.
 		var fileLogger *slog.Logger
 		if *logFilePath != "" {
 			f, err := os.OpenFile(*logFilePath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
@@ -151,14 +153,29 @@ func main() {
 			fileLogger = slog.New(slog.NewTextHandler(f, &slog.HandlerOptions{
 				ReplaceAttr: replaceTimeAttr,
 			}))
-			slog.Info("logging attestations to file", "path", *logFilePath)
+			slog.Info("logging to file", "path", *logFilePath)
 		}
-		node.ListenForAttestations(ctx, subs, genesisTime, fileLogger)
+
+		// Subscribe to block topic and start block listener if enabled.
+		var blockTracker *node.BlockTracker
+		if *listenBlocks {
+			blockSub, err := node.SubscribeBlocks(ps, forkDigest)
+			if err != nil {
+				slog.Error("failed to subscribe to block topic", "error", err)
+				os.Exit(1)
+			}
+			slog.Info("subscribed to block topic", "topic", node.BlockTopic(forkDigest))
+			blockTracker = node.NewBlockTracker()
+			go node.ListenForBlocks(ctx, blockSub, genesisTime, blockTracker, fileLogger)
+		}
+
+		// Start attestation listener goroutines.
+		node.ListenForAttestations(ctx, subs, genesisTime, blockTracker, fileLogger)
 	} else {
 		slog.Info("crawl mode: skipping gossipsub and attestation listener")
 	}
 
-	// 7. Start discv5 discovery + peer connection loop.
+	// 6. Start discv5 discovery + peer connection loop.
 	discCfg := discovery.Config{
 		PrivKey:      privKey,
 		DiscPort:     *discPort,
@@ -175,7 +192,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	// 7b. If bootstrap file provided, refresh ENRs via discv5 and dial matching peers.
+	// 6b. If bootstrap file provided, refresh ENRs via discv5 and dial matching peers.
 	if *bootstrapFile != "" {
 		go func() {
 			for {
@@ -185,7 +202,7 @@ func main() {
 		}()
 	}
 
-	// 8. Wait for shutdown signal.
+	// 7. Wait for shutdown signal.
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 	sig := <-sigCh
