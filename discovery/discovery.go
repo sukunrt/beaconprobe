@@ -6,6 +6,7 @@ import (
 	"crypto/ecdsa"
 	"fmt"
 	"log/slog"
+	"math/rand/v2"
 	"net"
 	"os"
 	"slices"
@@ -438,13 +439,19 @@ func DialBootstrapPeers(
 
 	sem := make(chan struct{}, maxConcurrentDials)
 
+	var nodeStrings []string
 	scanner := bufio.NewScanner(f)
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
 		if line == "" {
 			continue
 		}
+		nodeStrings = append(nodeStrings, line)
+	}
+	rand.Shuffle(len(nodeStrings),
+		func(i, j int) { nodeStrings[i], nodeStrings[j] = nodeStrings[j], nodeStrings[i] })
 
+	for _, line := range nodeStrings {
 		node, err := enode.Parse(enode.ValidSchemes, line)
 		if err != nil {
 			slog.Debug("bootstrap: failed to parse ENR", "error", err)
