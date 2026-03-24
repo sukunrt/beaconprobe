@@ -58,6 +58,11 @@ func SubnetTopic(forkDigest [4]byte, subnetID uint64) string {
 	return fmt.Sprintf("/eth2/%s/beacon_attestation_%d/ssz_snappy", hex.EncodeToString(forkDigest[:]), subnetID)
 }
 
+// BlockTopic returns the gossipsub topic string for beacon blocks.
+func BlockTopic(forkDigest [4]byte) string {
+	return fmt.Sprintf("/eth2/%s/beacon_block/ssz_snappy", hex.EncodeToString(forkDigest[:]))
+}
+
 // Subscription holds a topic and its subscription for a subnet.
 type Subscription struct {
 	SubnetID uint64
@@ -91,4 +96,27 @@ func SubscribeSubnets(ps *pubsub.PubSub, forkDigest [4]byte, subnetIDs []uint64)
 		subs = append(subs, Subscription{SubnetID: id, Topic: topic, Sub: sub})
 	}
 	return subs, nil
+}
+
+// SubscribeBlocks joins and subscribes to the beacon block topic.
+func SubscribeBlocks(ps *pubsub.PubSub, forkDigest [4]byte) (*pubsub.Subscription, error) {
+	topicStr := BlockTopic(forkDigest)
+
+	if err := ps.RegisterTopicValidator(topicStr, func(_ context.Context, _ peer.ID, _ *pubsub.Message) pubsub.ValidationResult {
+		return pubsub.ValidationAccept
+	}); err != nil {
+		return nil, fmt.Errorf("register validator for block topic: %w", err)
+	}
+
+	topic, err := ps.Join(topicStr)
+	if err != nil {
+		return nil, fmt.Errorf("join block topic: %w", err)
+	}
+
+	sub, err := topic.Subscribe()
+	if err != nil {
+		return nil, fmt.Errorf("subscribe to block topic: %w", err)
+	}
+
+	return sub, nil
 }

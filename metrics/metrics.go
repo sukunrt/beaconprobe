@@ -13,7 +13,7 @@ var (
 		prometheus.HistogramOpts{
 			Name:    "beaconprobe_attestation_latency_seconds",
 			Help:    "Attestation arrival delay relative to expected time (slot_start + 4s)",
-			Buckets: []float64{0.1, 0.25, 0.5, 1, 2, 3, 4, 5, 6, 8, 10, 12},
+			Buckets: []float64{-1, -0.5, -0.1, 0, 0.1, 0.25, 0.5, 1, 2, 3, 4, 5, 6, 8, 10, 12},
 		},
 		[]string{"subnet_id"},
 	)
@@ -22,7 +22,7 @@ var (
 		prometheus.HistogramOpts{
 			Name:    "beaconprobe_attestation_arrival_in_slot_seconds",
 			Help:    "Time into the slot when attestation was received",
-			Buckets: []float64{0.1, 0.25, 0.5, 1, 2, 3, 4, 5, 6, 8, 10, 12},
+			Buckets: []float64{-1, -0.5, -0.1, 0, 0.1, 0.25, 0.5, 1, 2, 3, 4, 5, 6, 8, 10, 12},
 		},
 		[]string{"subnet_id"},
 	)
@@ -41,6 +41,21 @@ var (
 			Help: "Attestations arriving after 8s into the slot",
 		},
 		[]string{"subnet_id"},
+	)
+
+	BlockArrivalInSlot = prometheus.NewHistogram(
+		prometheus.HistogramOpts{
+			Name:    "beaconprobe_block_arrival_in_slot_seconds",
+			Help:    "Time into the slot when block was received",
+			Buckets: []float64{0.1, 0.25, 0.5, 1, 2, 3, 4, 5, 6, 8, 10, 12},
+		},
+	)
+
+	BlocksReceived = prometheus.NewCounter(
+		prometheus.CounterOpts{
+			Name: "beaconprobe_blocks_received_total",
+			Help: "Total blocks received",
+		},
 	)
 
 	ConnectedPeers = prometheus.NewGauge(
@@ -94,6 +109,8 @@ func init() {
 		AttestationArrivalInSlot,
 		AttestationsReceived,
 		LateAttestations,
+		BlockArrivalInSlot,
+		BlocksReceived,
 		ConnectedPeers,
 		MeshPeers,
 		DiscoveryPeersFound,

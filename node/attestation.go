@@ -13,14 +13,15 @@ import (
 )
 
 // ListenForAttestations starts a goroutine for each subscription that processes attestation messages.
+// If blockTracker is non-nil, attestation latency is measured relative to block arrival time.
 // If fileLogger is non-nil, attestation arrival data is written to it.
-func ListenForAttestations(ctx context.Context, subs []Subscription, genesisTime time.Time, fileLogger *slog.Logger) {
+func ListenForAttestations(ctx context.Context, subs []Subscription, genesisTime time.Time, blockTracker *BlockTracker, fileLogger *slog.Logger) {
 	for _, s := range subs {
-		go listenSubnet(ctx, s, genesisTime, fileLogger)
+		go listenSubnet(ctx, s, genesisTime, blockTracker, fileLogger)
 	}
 }
 
-func listenSubnet(ctx context.Context, sub Subscription, genesisTime time.Time, fileLogger *slog.Logger) {
+func listenSubnet(ctx context.Context, sub Subscription, genesisTime time.Time, blockTracker *BlockTracker, fileLogger *slog.Logger) {
 	subnetLabel := fmt.Sprintf("%d", sub.SubnetID)
 	enc := encoder.SszNetworkEncoder{}
 
@@ -49,7 +50,13 @@ func listenSubnet(ctx context.Context, sub Subscription, genesisTime time.Time, 
 		}
 
 		timeIntoSlot := receiveTime.Sub(slotStart)
-		arrivalDelay := timeIntoSlot - 4*time.Second
+		var arrivalDelay time.Duration
+		if blockTracker != nil {
+			blockTime := blockTracker.GetBlockTime(att.Data.Slot, genesisTime)
+			arrivalDelay = receiveTime.Sub(blockTime)
+		} else {
+			arrivalDelay = timeIntoSlot - 4*time.Second
+		}
 
 		metrics.AttestationsReceived.WithLabelValues(subnetLabel).Inc()
 		metrics.AttestationLatency.WithLabelValues(subnetLabel).Observe(arrivalDelay.Seconds())
@@ -68,13 +75,17 @@ func listenSubnet(ctx context.Context, sub Subscription, genesisTime time.Time, 
 		)
 
 		if fileLogger != nil {
-			fileLogger.Info("attestation",
+			attrs := []any{
 				"subnet", sub.SubnetID,
 				"slot", att.Data.Slot,
 				"timeInSlotMs", timeIntoSlot.Milliseconds(),
 				"arrivalDelayMs", arrivalDelay.Milliseconds(),
 				"attester", att.AttesterIndex,
-			)
+			}
+			if blockTracker != nil {
+				attrs = append(attrs, "blockDelayMs", arrivalDelay.Milliseconds())
+			}
+			fileLogger.Info("attestation", attrs...)
 		}
 	}
 }
