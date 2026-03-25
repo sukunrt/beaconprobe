@@ -101,6 +101,20 @@ var (
 		},
 		[]string{"user_agent"},
 	)
+
+	DialAttempts = prometheus.NewCounter(
+		prometheus.CounterOpts{
+			Name: "beaconprobe_dial_attempts_total",
+			Help: "Total dial attempts by peer manager",
+		},
+	)
+
+	DialBackoffs = prometheus.NewCounter(
+		prometheus.CounterOpts{
+			Name: "beaconprobe_dial_backoffs_total",
+			Help: "Total dials skipped due to backoff",
+		},
+	)
 )
 
 func init() {
@@ -117,6 +131,8 @@ func init() {
 		QUICPeers,
 		TCPPeers,
 		PeerUserAgents,
+		DialAttempts,
+		DialBackoffs,
 	)
 }
 

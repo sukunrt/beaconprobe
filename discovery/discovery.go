@@ -47,6 +47,7 @@ type Config struct {
 	AttnetsBytes []byte
 	QuicOnly     bool
 	CrawlFile    string // If non-empty, run in crawl mode and write ENRs to this file.
+	Candidates   chan<- peer.AddrInfo // PeerManager candidates channel; nil in crawl mode.
 }
 
 // StartDiscovery starts discv5 and a peer connection loop.
@@ -146,9 +147,6 @@ func discoverPeers(ctx context.Context, h host.Host, iterator enode.Iterator, cf
 	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
 
-	sem := make(chan struct{}, maxConcurrentDials)
-	var inFlightDials atomic.Int64
-
 	// Crawl mode: open file for appending ENRs and track seen peers.
 	var crawlWriter *crawlFileWriter
 	if cfg.CrawlFile != "" {
@@ -160,6 +158,10 @@ func discoverPeers(ctx context.Context, h host.Host, iterator enode.Iterator, cf
 		}
 		defer crawlWriter.Close()
 	}
+
+	// Crawl mode dials directly with a semaphore.
+	sem := make(chan struct{}, maxConcurrentDials)
+	var inFlightDials atomic.Int64
 
 	for {
 		select {
@@ -188,28 +190,34 @@ func discoverPeers(ctx context.Context, h host.Host, iterator enode.Iterator, cf
 			}
 		}
 
-		// Convert enode to libp2p AddrInfo and connect.
 		addrInfo, err := enodeToAddrInfo(node)
 		if err != nil || addrInfo == nil {
 			continue
 		}
 
-		// In quic-only mode, skip peers that have no QUIC address.
 		if cfg.QuicOnly && !hasQUICAddr(addrInfo) {
 			continue
 		}
 
-		// Don't reconnect to already-connected peers.
 		if h.Network().Connectedness(addrInfo.ID) == network.Connected {
 			continue
 		}
 
-		// In crawl mode, skip peers we've already seen (dedup across discv4/v5).
+		// Normal mode: send to PeerManager via channel (blocks when full = backpressure).
+		if cfg.Candidates != nil {
+			select {
+			case cfg.Candidates <- *addrInfo:
+			case <-ctx.Done():
+				return
+			}
+			continue
+		}
+
+		// Crawl mode: dial directly.
 		if crawlWriter != nil && crawlWriter.HasPeer(addrInfo.ID) {
 			continue
 		}
 
-		// Acquire semaphore slot.
 		select {
 		case sem <- struct{}{}:
 		case <-ctx.Done():
@@ -420,7 +428,7 @@ func (c *crawlFileWriter) Close() error {
 
 // DialBootstrapPeers reads ENRs from a file, refreshes each via discv5
 // RequestENR to get current subnet subscriptions, filters by subnet overlap,
-// and dials matching peers concurrently.
+// and sends matching peers to the candidates channel.
 func DialBootstrapPeers(
 	ctx context.Context,
 	h host.Host,
@@ -429,6 +437,7 @@ func DialBootstrapPeers(
 	forkDigest [4]byte,
 	subnetIDs []uint64,
 	quicOnly bool,
+	candidates chan<- peer.AddrInfo,
 ) {
 	f, err := os.Open(filePath)
 	if err != nil {
@@ -436,8 +445,6 @@ func DialBootstrapPeers(
 		return
 	}
 	defer f.Close()
-
-	sem := make(chan struct{}, maxConcurrentDials)
 
 	var nodeStrings []string
 	scanner := bufio.NewScanner(f)
@@ -457,55 +464,40 @@ func DialBootstrapPeers(
 			slog.Info("bootstrap: failed to parse ENR", "error", err)
 			continue
 		}
+
+		// Refresh ENR via discv5 to get current subnet subscriptions.
+		freshNode, err := listener.RequestENR(node)
+		if err != nil {
+			slog.Info("bootstrap: failed to refresh ENR", "peer", node.ID().TerminalString(), "error", err)
+			freshNode = node
+		}
+
+		if !matchesForkDigest(freshNode, forkDigest) {
+			continue
+		}
+
+		if !hasSubnetOverlap(freshNode, subnetIDs) {
+			continue
+		}
+
+		addrInfo, err := enodeToAddrInfo(freshNode)
+		if err != nil || addrInfo == nil {
+			continue
+		}
+
+		if quicOnly && !hasQUICAddr(addrInfo) {
+			continue
+		}
+
+		if h.Network().Connectedness(addrInfo.ID) == network.Connected {
+			continue
+		}
+
 		select {
-		case sem <- struct{}{}:
+		case candidates <- *addrInfo:
 		case <-ctx.Done():
 			return
 		}
-		func() {
-			defer func() { <-sem }()
-
-			// Refresh ENR via discv5 to get current subnet subscriptions.
-			freshNode, err := listener.RequestENR(node)
-			if err != nil {
-				slog.Info("bootstrap: failed to refresh ENR", "peer", node.ID().TerminalString(), "error", err)
-				// Fall back to the stale ENR from the file.
-				freshNode = node
-			}
-
-			if !matchesForkDigest(freshNode, forkDigest) {
-				return
-			}
-
-			if !hasSubnetOverlap(freshNode, subnetIDs) {
-				return
-			}
-
-			addrInfo, err := enodeToAddrInfo(freshNode)
-			if err != nil || addrInfo == nil {
-				return
-			}
-
-			if quicOnly && !hasQUICAddr(addrInfo) {
-				return
-			}
-
-			if h.Network().Connectedness(addrInfo.ID) == network.Connected {
-				return
-			}
-
-			dial := func(ai peer.AddrInfo) {
-				connectCtx, cancel := context.WithTimeout(ctx, dialTimeout)
-				defer cancel()
-				connectCtx = network.WithDialPeerTimeout(connectCtx, dialTimeout)
-				if err := h.Connect(connectCtx, ai); err != nil {
-					slog.Info("bootstrap: failed to connect", "peer", peerShort(ai.ID), "error", err)
-				} else {
-					slog.Info("bootstrap: connected", "peer", peerShort(ai.ID))
-				}
-			}
-			dial(*addrInfo)
-		}()
 	}
 	slog.Info("bootstrap: finished reading file")
 }

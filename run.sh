@@ -1,18 +1,16 @@
 #!/bin/bash
-RUN=run12
+RUN=run27
 mkdir -p /storage/beaconnode/$RUN
 go run . \
-  --tcp-port 13456 \
-  --quic-port 13457 \
-  --discv5-port 13458 \
-  --discv4-port 13459 \
+  --tcp-port 13472 \
+  --quic-port 13473 \
+  --discv5-port 13474 \
+  --discv4-port 13475 \
   --subnets 0 \
-  --metrics-addr :9893 \
+  --metrics-addr :9897 \
   --log-file-path /storage/beaconnode/$RUN/attestations.log \
-  --key-file /storage/beaconnode/node.key \
+  --key-file /storage/beaconnode/node5.key \
   --log-level info \
-  --quic-only \
-  --gossip-d 1000 \
-  --disable-ihave \
+  --gossip-d 8 \
   --bootstrap-file /storage/beaconnode/crawl3/peers.enr \
   > /storage/beaconnode/$RUN/run.log 2>&1

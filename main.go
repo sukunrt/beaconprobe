@@ -175,7 +175,15 @@ func main() {
 		slog.Info("crawl mode: skipping gossipsub and attestation listener")
 	}
 
-	// 6. Start discv5 discovery + peer connection loop.
+	// 6. Start peer manager (skipped in crawl mode).
+	var pm *node.PeerManager
+	if *crawlFile == "" {
+		pm = node.NewPeerManager(h, *gossipD)
+		go pm.Run(ctx)
+		slog.Info("peer manager started", "minPeers", 7*(*gossipD), "maxPeers", 10*(*gossipD))
+	}
+
+	// 7. Start discv5 discovery + peer connection loop.
 	discCfg := discovery.Config{
 		PrivKey:      privKey,
 		DiscPort:     *discPort,
@@ -186,17 +194,20 @@ func main() {
 		QuicOnly:     *quicOnly,
 		CrawlFile:    *crawlFile,
 	}
+	if pm != nil {
+		discCfg.Candidates = pm.Candidates
+	}
 	discv5Listener, err := discovery.StartDiscovery(ctx, h, discCfg)
 	if err != nil {
 		slog.Error("failed to start discovery", "error", err)
 		os.Exit(1)
 	}
 
-	// 6b. If bootstrap file provided, refresh ENRs via discv5 and dial matching peers.
+	// 7b. If bootstrap file provided, refresh ENRs via discv5 and send to peer manager.
 	if *bootstrapFile != "" {
 		go func() {
 			for {
-				discovery.DialBootstrapPeers(ctx, h, discv5Listener, *bootstrapFile, forkDigest, subnetIDs, *quicOnly)
+				discovery.DialBootstrapPeers(ctx, h, discv5Listener, *bootstrapFile, forkDigest, subnetIDs, *quicOnly, pm.Candidates)
 				time.Sleep(60 * time.Second)
 			}
 		}()

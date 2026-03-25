@@ -362,6 +362,8 @@ github.com/libp2p/go-libp2p-mplex v0.11.1-0.20260319205417-d6fca62531f8 h1:dELBT
 github.com/libp2p/go-libp2p-mplex v0.11.1-0.20260319205417-d6fca62531f8/go.mod h1:QrsdNY3lzjpdo9V1goJfPb0O65Nms0sUR8CDAO18f6k=
 github.com/libp2p/go-libp2p-pubsub v0.15.1-0.20260323200249-2aabbfb20556 h1:36aKlgn1LKcXIQt/pL/uk5PXx3DkELLRid5GIHkRDrg=
 github.com/libp2p/go-libp2p-pubsub v0.15.1-0.20260323200249-2aabbfb20556/go.mod h1:+/QL1FKV0xG8UAamQsdh994Oms8kDRJ9gqQgeG4r36E=
+github.com/libp2p/go-libp2p-pubsub v0.15.1-0.20260325131314-685cab558636 h1:fRmYn+uIxRZ30PBZYRu10xqTqZbu+bjDIH3t2CuOYj4=
+github.com/libp2p/go-libp2p-pubsub v0.15.1-0.20260325131314-685cab558636/go.mod h1:+/QL1FKV0xG8UAamQsdh994Oms8kDRJ9gqQgeG4r36E=
 github.com/libp2p/go-libp2p-testing v0.12.0 h1:EPvBb4kKMWO29qP4mZGyhVzUyR25dvfUIK5WDu6iPUA=
 github.com/libp2p/go-libp2p-testing v0.12.0/go.mod h1:KcGDRXyN7sQCllucn1cOOS+Dmm7ujhfEyXQL5lvkcPg=
 github.com/libp2p/go-mplex v0.7.0 h1:BDhFZdlk5tbr0oyFq/xv/NPGfjbnrsDam1EvutpBDbY=
