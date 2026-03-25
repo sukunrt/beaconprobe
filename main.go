@@ -118,11 +118,12 @@ func main() {
 
 	// 5. Gossipsub and attestation listening (skipped in crawl mode).
 	if *crawlFile == "" {
-		genesisValRoot := cfg.GenesisValidatorsRoot[:]
-		gossipLogFile := "gossipsub-logs.log"
-		if *logFilePath != "" {
-			gossipLogFile = filepath.Join(filepath.Dir(*logFilePath), "gossipsub-logs.log")
+		if *logFilePath == "" {
+			slog.Error("--log-file-path is required")
+			os.Exit(1)
 		}
+		genesisValRoot := cfg.GenesisValidatorsRoot[:]
+		gossipLogFile := filepath.Join(filepath.Dir(*logFilePath), "gossipsub-logs.log")
 		ps, err := node.NewGossipSub(ctx, h, genesisValRoot, *gossipD, *disableIHave, forkDigest, subnetIDs, gossipLogFile)
 		if err != nil {
 			slog.Error("failed to create gossipsub", "error", err)
@@ -142,19 +143,16 @@ func main() {
 		}
 
 		// Set up file logger.
-		var fileLogger *slog.Logger
-		if *logFilePath != "" {
-			f, err := os.OpenFile(*logFilePath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
-			if err != nil {
-				slog.Error("failed to open log file", "path", *logFilePath, "error", err)
-				os.Exit(1)
-			}
-			defer f.Close()
-			fileLogger = slog.New(slog.NewTextHandler(f, &slog.HandlerOptions{
-				ReplaceAttr: replaceTimeAttr,
-			}))
-			slog.Info("logging to file", "path", *logFilePath)
+		f, err := os.OpenFile(*logFilePath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+		if err != nil {
+			slog.Error("failed to open log file", "path", *logFilePath, "error", err)
+			os.Exit(1)
 		}
+		defer f.Close()
+		fileLogger := slog.New(slog.NewTextHandler(f, &slog.HandlerOptions{
+			ReplaceAttr: replaceTimeAttr,
+		}))
+		slog.Info("logging to file", "path", *logFilePath)
 
 		// Subscribe to block topic and start block listener if enabled.
 		var blockTracker *node.BlockTracker

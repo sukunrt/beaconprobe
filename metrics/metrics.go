@@ -18,6 +18,15 @@ var (
 		[]string{"subnet_id"},
 	)
 
+	AttestationLatencyFromFourSeconds = prometheus.NewHistogramVec(
+		prometheus.HistogramOpts{
+			Name:    "beaconprobe_attestation_latency_from_4s_seconds",
+			Help:    "Attestation arrival delay relative to slot_start + 4s",
+			Buckets: []float64{-1, -0.5, -0.1, 0, 0.1, 0.25, 0.5, 1, 2, 3, 4, 5, 6, 8, 10, 12},
+		},
+		[]string{"subnet_id"},
+	)
+
 	AttestationArrivalInSlot = prometheus.NewHistogramVec(
 		prometheus.HistogramOpts{
 			Name:    "beaconprobe_attestation_arrival_in_slot_seconds",
@@ -120,6 +129,7 @@ var (
 func init() {
 	prometheus.MustRegister(
 		AttestationLatency,
+		AttestationLatencyFromFourSeconds,
 		AttestationArrivalInSlot,
 		AttestationsReceived,
 		LateAttestations,

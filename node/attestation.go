@@ -118,37 +118,23 @@ func logSlotAttestations(slot primitives.Slot, entries []bufferedAttestation, ge
 
 		metrics.AttestationsReceived.WithLabelValues(subnetLabel).Inc()
 		metrics.AttestationLatency.WithLabelValues(subnetLabel).Observe(arrivalDelay.Seconds())
+		metrics.AttestationLatencyFromFourSeconds.WithLabelValues(subnetLabel).Observe((timeIntoSlot - 4*time.Second).Seconds())
 		metrics.AttestationArrivalInSlot.WithLabelValues(subnetLabel).Observe(timeIntoSlot.Seconds())
 		if timeIntoSlot > 8*time.Second {
 			metrics.LateAttestations.WithLabelValues(subnetLabel).Inc()
 		}
 
-		attrs := []any{
+		fileAttrs := []any{
 			"subnet", e.subnetID,
 			"slot", slot,
-			"timeInSlot", timeIntoSlot.Round(time.Millisecond),
-			"arrivalDelay", arrivalDelay.Round(time.Millisecond),
+			"timeInSlotMs", timeIntoSlot.Milliseconds(),
+			"arrivalDelayMs", arrivalDelay.Milliseconds(),
 			"attester", e.attesterIdx,
 			"block", blockStatus,
 		}
 		if blockStatus == "proposed" {
-			attrs = append(attrs, "blockTimeInSlot", blockTimeInSlot.Round(time.Millisecond))
+			fileAttrs = append(fileAttrs, "blockTimeInSlotMs", blockTimeInSlot.Milliseconds())
 		}
-		slog.Info("attestation", attrs...)
-
-		if fileLogger != nil {
-			fileAttrs := []any{
-				"subnet", e.subnetID,
-				"slot", slot,
-				"timeInSlotMs", timeIntoSlot.Milliseconds(),
-				"arrivalDelayMs", arrivalDelay.Milliseconds(),
-				"attester", e.attesterIdx,
-				"block", blockStatus,
-			}
-			if blockStatus == "proposed" {
-				fileAttrs = append(fileAttrs, "blockTimeInSlotMs", blockTimeInSlot.Milliseconds())
-			}
-			fileLogger.Info("attestation", fileAttrs...)
-		}
+		fileLogger.Info("attestation", fileAttrs...)
 	}
 }
