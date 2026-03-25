@@ -35,19 +35,12 @@ func (bt *BlockTracker) Record(slot primitives.Slot, t time.Time) {
 	}
 }
 
-// GetBlockTime returns the block arrival time for a slot, or slot_start + 4s if not seen.
-func (bt *BlockTracker) GetBlockTime(slot primitives.Slot, genesisTime time.Time) time.Time {
+// GetBlockArrival returns the block arrival time for a slot and whether a block was received.
+func (bt *BlockTracker) GetBlockArrival(slot primitives.Slot) (time.Time, bool) {
 	bt.mu.Lock()
 	t, ok := bt.blocks[slot]
 	bt.mu.Unlock()
-	if ok {
-		return t
-	}
-	slotStart, err := slots.StartTime(genesisTime, slot)
-	if err != nil {
-		return time.Now()
-	}
-	return slotStart.Add(4 * time.Second)
+	return t, ok
 }
 
 // cleanup removes entries older than the given slot.

@@ -19,12 +19,14 @@ func TestBlockTopic(t *testing.T) {
 
 func TestBlockTracker_RecordAndGet(t *testing.T) {
 	bt := NewBlockTracker()
-	genesisTime := time.Unix(1606824023, 0)
 	now := time.Now()
 
 	bt.Record(100, now)
 
-	got := bt.GetBlockTime(100, genesisTime)
+	got, ok := bt.GetBlockArrival(100)
+	if !ok {
+		t.Fatal("expected block to be recorded")
+	}
 	if got != now {
 		t.Fatalf("expected %v, got %v", now, got)
 	}
@@ -32,35 +34,33 @@ func TestBlockTracker_RecordAndGet(t *testing.T) {
 
 func TestBlockTracker_FirstArrivalWins(t *testing.T) {
 	bt := NewBlockTracker()
-	genesisTime := time.Unix(1606824023, 0)
 	first := time.Now()
 	second := first.Add(500 * time.Millisecond)
 
 	bt.Record(100, first)
 	bt.Record(100, second)
 
-	got := bt.GetBlockTime(100, genesisTime)
+	got, ok := bt.GetBlockArrival(100)
+	if !ok {
+		t.Fatal("expected block to be recorded")
+	}
 	if got != first {
 		t.Fatalf("expected first arrival %v, got %v", first, got)
 	}
 }
 
-func TestBlockTracker_FallbackToSlotStart(t *testing.T) {
+func TestBlockTracker_MissedBlock(t *testing.T) {
 	bt := NewBlockTracker()
-	genesisTime := time.Unix(1606824023, 0)
 
-	// Slot 100 not recorded — should return slot_start + 4s.
-	got := bt.GetBlockTime(100, genesisTime)
-	wantSlotStart := genesisTime.Add(time.Duration(100*12) * time.Second)
-	want := wantSlotStart.Add(4 * time.Second)
-	if got != want {
-		t.Fatalf("expected fallback %v, got %v", want, got)
+	// Slot 100 not recorded — should return not ok.
+	_, ok := bt.GetBlockArrival(100)
+	if ok {
+		t.Fatal("expected no block for unrecorded slot")
 	}
 }
 
 func TestBlockTracker_Cleanup(t *testing.T) {
 	bt := NewBlockTracker()
-	genesisTime := time.Unix(1606824023, 0)
 	now := time.Now()
 
 	bt.Record(10, now)
@@ -70,32 +70,31 @@ func TestBlockTracker_Cleanup(t *testing.T) {
 	bt.cleanup(60)
 
 	// Slots 10 and 50 should be cleaned up.
-	if got := bt.GetBlockTime(10, genesisTime); got == now {
+	if _, ok := bt.GetBlockArrival(10); ok {
 		t.Fatal("slot 10 should have been cleaned up")
 	}
-	if got := bt.GetBlockTime(50, genesisTime); got == now {
+	if _, ok := bt.GetBlockArrival(50); ok {
 		t.Fatal("slot 50 should have been cleaned up")
 	}
 	// Slot 100 should still be there.
-	if got := bt.GetBlockTime(100, genesisTime); got != now {
+	if _, ok := bt.GetBlockArrival(100); !ok {
 		t.Fatal("slot 100 should not have been cleaned up")
 	}
 }
 
 func TestBlockTracker_ConcurrentAccess(t *testing.T) {
 	bt := NewBlockTracker()
-	genesisTime := time.Unix(1606824023, 0)
 
 	done := make(chan struct{})
 	go func() {
-		for i := primitives.Slot(0); i < 1000; i++ {
+		for i := range primitives.Slot(1000) {
 			bt.Record(i, time.Now())
 		}
 		close(done)
 	}()
 
-	for i := primitives.Slot(0); i < 1000; i++ {
-		bt.GetBlockTime(i, genesisTime)
+	for i := range primitives.Slot(1000) {
+		bt.GetBlockArrival(i)
 	}
 	<-done
 }
