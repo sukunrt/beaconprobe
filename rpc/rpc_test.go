@@ -120,7 +120,8 @@ func TestMakeAttnetsBytes_IgnoresOutOfRange(t *testing.T) {
 
 func TestMakeStatusProvider(t *testing.T) {
 	fd := [4]byte{0xab, 0xcd, 0xef, 0x01}
-	provider := MakeStatusProvider(fd)
+	genesisTime := time.Now().Add(-1 * time.Hour)
+	provider := MakeStatusProvider(fd, genesisTime)
 	status := provider()
 
 	if !bytes.Equal(status.ForkDigest, fd[:]) {
@@ -135,9 +136,49 @@ func TestMakeStatusProvider(t *testing.T) {
 	if status.FinalizedEpoch != 0 {
 		t.Fatalf("finalized epoch should be 0, got %d", status.FinalizedEpoch)
 	}
-	if status.HeadSlot != 0 {
-		t.Fatalf("head slot should be 0, got %d", status.HeadSlot)
+	if status.HeadSlot == 0 {
+		t.Fatalf("head slot should be non-zero for non-genesis time")
 	}
+}
+
+func TestMakeStatusProvider_HeadSlot(t *testing.T) {
+	fd := [4]byte{0x01, 0x02, 0x03, 0x04}
+	const slotDuration = 12 * time.Second
+
+	t.Run("genesis in the future returns slot 0", func(t *testing.T) {
+		genesis := time.Now().Add(1 * time.Hour)
+		status := MakeStatusProvider(fd, genesis)()
+		if status.HeadSlot != 0 {
+			t.Fatalf("expected slot 0 for future genesis, got %d", status.HeadSlot)
+		}
+	})
+
+	t.Run("genesis is now returns slot 0", func(t *testing.T) {
+		// Current slot is 0, so previous slot clamps to 0.
+		genesis := time.Now()
+		status := MakeStatusProvider(fd, genesis)()
+		if status.HeadSlot != 0 {
+			t.Fatalf("expected slot 0 at genesis, got %d", status.HeadSlot)
+		}
+	})
+
+	t.Run("returns previous slot", func(t *testing.T) {
+		// 10 slots ago: currentSlot=10, headSlot should be 9.
+		genesis := time.Now().Add(-10 * slotDuration)
+		status := MakeStatusProvider(fd, genesis)()
+		if status.HeadSlot != 9 {
+			t.Fatalf("expected slot 9, got %d", status.HeadSlot)
+		}
+	})
+
+	t.Run("mid-slot returns previous slot", func(t *testing.T) {
+		// 5 full slots + 6s into slot 5: currentSlot=5, headSlot=4.
+		genesis := time.Now().Add(-5*slotDuration - 6*time.Second)
+		status := MakeStatusProvider(fd, genesis)()
+		if status.HeadSlot != 4 {
+			t.Fatalf("expected slot 4, got %d", status.HeadSlot)
+		}
+	})
 }
 
 func TestForkDigestFromStatus(t *testing.T) {
@@ -162,7 +203,7 @@ func TestStatusHandshake(t *testing.T) {
 
 	fd := [4]byte{0x01, 0x02, 0x03, 0x04}
 	attnets := MakeAttnetsBytes([]uint64{0, 1})
-	provider := MakeStatusProvider(fd)
+	provider := MakeStatusProvider(fd, time.Now())
 
 	RegisterHandlers(server, provider, attnets)
 	connect(t, client, server)
@@ -219,7 +260,7 @@ func TestPingHandler(t *testing.T) {
 	client := newTestHost(t)
 
 	fd := [4]byte{0x01, 0x02, 0x03, 0x04}
-	RegisterHandlers(server, MakeStatusProvider(fd), MakeAttnetsBytes(nil))
+	RegisterHandlers(server, MakeStatusProvider(fd, time.Now()), MakeAttnetsBytes(nil))
 	connect(t, client, server)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -332,7 +373,7 @@ func TestGoodbyeHandler(t *testing.T) {
 	client := newTestHost(t)
 
 	fd := [4]byte{0x01, 0x02, 0x03, 0x04}
-	RegisterHandlers(server, MakeStatusProvider(fd), MakeAttnetsBytes(nil))
+	RegisterHandlers(server, MakeStatusProvider(fd, time.Now()), MakeAttnetsBytes(nil))
 	connect(t, client, server)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -360,7 +401,7 @@ func TestSendStatusOnConnect(t *testing.T) {
 	client := newTestHost(t)
 
 	fd := [4]byte{0x01, 0x02, 0x03, 0x04}
-	provider := MakeStatusProvider(fd)
+	provider := MakeStatusProvider(fd, time.Now())
 
 	// Register handlers on both sides.
 	RegisterHandlers(server, provider, MakeAttnetsBytes(nil))

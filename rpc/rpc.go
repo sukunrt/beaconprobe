@@ -10,6 +10,7 @@ import (
 	"github.com/OffchainLabs/prysm/v7/beacon-chain/p2p/encoder"
 	"github.com/OffchainLabs/prysm/v7/consensus-types/primitives"
 	ethpb "github.com/OffchainLabs/prysm/v7/proto/prysm/v1alpha1"
+	"github.com/OffchainLabs/prysm/v7/time/slots"
 	fastssz "github.com/prysmaticlabs/fastssz"
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/network"
@@ -244,14 +245,18 @@ func sendStatus(h host.Host, peerID peer.ID, statusProvider StatusProvider) {
 }
 
 // MakeStatusProvider returns a function that provides our StatusV2 message.
-func MakeStatusProvider(forkDigest [4]byte) StatusProvider {
+func MakeStatusProvider(forkDigest [4]byte, genesisTime time.Time) StatusProvider {
 	return func() *ethpb.StatusV2 {
+		headSlot := primitives.Slot(0)
+		if cs := slots.CurrentSlot(genesisTime); cs > 0 {
+			headSlot = cs - 1
+		}
 		return &ethpb.StatusV2{
 			ForkDigest:            forkDigest[:],
 			FinalizedRoot:         make([]byte, 32),
 			FinalizedEpoch:        0,
 			HeadRoot:              make([]byte, 32),
-			HeadSlot:              0,
+			HeadSlot:              headSlot,
 			EarliestAvailableSlot: 0,
 		}
 	}

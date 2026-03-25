@@ -37,6 +37,7 @@ func main() {
 	disableIHave := flag.Bool("disable-ihave", false, "disable gossipsub IHAVE gossip")
 	crawlFile := flag.String("crawl", "", "crawl mode: discover all peers and write ENRs to this file")
 	bootstrapFile := flag.String("bootstrap-file", "", "path to ENR file for direct-dialing peers at startup")
+	maxPeersFlag := flag.Int("max-peers", 0, "maximum number of peers to connect to (0 = 10*gossip-d)")
 	listenBlocks := flag.Bool("listen-blocks", true, "subscribe to beacon block topic and measure attestation latency relative to block arrival")
 	flag.Parse()
 
@@ -111,7 +112,7 @@ func main() {
 
 	// 4. Register RPC handlers (before discovery so peers can handshake).
 	attnetsBytes := rpc.MakeAttnetsBytes(subnetIDs)
-	statusProvider := rpc.MakeStatusProvider(forkDigest)
+	statusProvider := rpc.MakeStatusProvider(forkDigest, genesisTime)
 	rpc.RegisterHandlers(h, statusProvider, attnetsBytes)
 	rpc.SendStatusOnConnect(h, statusProvider)
 	slog.Info("RPC handlers registered")
@@ -173,13 +174,17 @@ func main() {
 		slog.Info("crawl mode: skipping gossipsub and attestation listener")
 	}
 
-	// 6. Start peer manager (skipped in crawl mode).
-	var pm *node.PeerManager
-	if *crawlFile == "" {
-		pm = node.NewPeerManager(h, *gossipD)
-		go pm.Run(ctx)
-		slog.Info("peer manager started", "minPeers", 7*(*gossipD), "maxPeers", 10*(*gossipD))
+	// 6. Start peer manager.
+	maxPeers := 10 * (*gossipD)
+	if *maxPeersFlag > 0 {
+		maxPeers = *maxPeersFlag
 	}
+	if *crawlFile != "" {
+		maxPeers = 0 // no cap in crawl mode
+	}
+	pm := node.NewPeerManager(h, maxPeers)
+	go pm.Run(ctx)
+	slog.Info("peer manager started", "maxPeers", maxPeers)
 
 	// 7. Start discv5 discovery + peer connection loop.
 	discCfg := discovery.Config{
@@ -191,9 +196,7 @@ func main() {
 		DiscV4Port:   *discV4Port,
 		QuicOnly:     *quicOnly,
 		CrawlFile:    *crawlFile,
-	}
-	if pm != nil {
-		discCfg.Candidates = pm.Candidates
+		Candidates:   pm.Candidates,
 	}
 	discv5Listener, err := discovery.StartDiscovery(ctx, h, discCfg)
 	if err != nil {

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/libp2p/go-libp2p/core/host"
@@ -14,9 +15,11 @@ import (
 )
 
 const (
-	dialTimeout    = 4 * time.Second
-	initialBackoff = 30 * time.Second
-	maxBackoff     = 30 * time.Minute
+	maxConcurrentDials = 500
+	dialTimeout        = 4 * time.Second
+	initialBackoff     = 30 * time.Second
+	maxBackoff         = 30 * time.Minute
+	peerCheckInterval  = 10 * time.Second
 )
 
 type backoffEntry struct {
@@ -27,21 +30,18 @@ type backoffEntry struct {
 // PeerManager manages peer connections with backpressure, backoff, and peer caps.
 type PeerManager struct {
 	h          host.Host
-	minPeers   int
-	maxPeers   int
+	maxPeers   int // 0 = no cap (crawl mode)
 	Candidates chan peer.AddrInfo
 
 	mu      sync.Mutex
 	backoff map[peer.ID]backoffEntry
 }
 
-// NewPeerManager creates a PeerManager. Discovery and bootstrap should send
-// candidates to pm.Candidates; the channel blocks when full (backpressure).
-func NewPeerManager(h host.Host, gossipD int) *PeerManager {
+// NewPeerManager creates a PeerManager. maxPeers=0 means no peer cap (crawl mode).
+func NewPeerManager(h host.Host, maxPeers int) *PeerManager {
 	return &PeerManager{
 		h:          h,
-		minPeers:   7 * gossipD,
-		maxPeers:   10 * gossipD,
+		maxPeers:   maxPeers,
 		Candidates: make(chan peer.AddrInfo, 64),
 		backoff:    make(map[peer.ID]backoffEntry),
 	}
@@ -49,14 +49,50 @@ func NewPeerManager(h host.Host, gossipD int) *PeerManager {
 
 // Run processes candidates until ctx is cancelled.
 func (pm *PeerManager) Run(ctx context.Context) {
+	sem := make(chan struct{}, maxConcurrentDials)
+	var inFlight atomic.Int64
+	ticker := time.NewTicker(peerCheckInterval)
+	defer ticker.Stop()
+
 	for {
+		// Gate: if peers + in-flight dials >= maxPeers + 20, wait for ticker.
+		if pm.tooManyInFlight(&inFlight) {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				continue
+			}
+		}
+
 		select {
 		case <-ctx.Done():
 			return
+		case <-ticker.C:
+			continue
 		case ai := <-pm.Candidates:
-			pm.handleCandidate(ctx, ai)
+			select {
+			case sem <- struct{}{}:
+			case <-ctx.Done():
+				return
+			}
+			inFlight.Add(1)
+			go func() {
+				defer func() { <-sem; inFlight.Add(-1) }()
+				pm.handleCandidate(ctx, ai)
+			}()
+			if pm.tooManyInFlight(&inFlight) {
+				continue
+			}
 		}
 	}
+}
+
+func (pm *PeerManager) tooManyInFlight(inFlight *atomic.Int64) bool {
+	if pm.maxPeers == 0 {
+		return false
+	}
+	return len(pm.h.Network().Peers())+int(inFlight.Load()) >= pm.maxPeers+20
 }
 
 func (pm *PeerManager) handleCandidate(ctx context.Context, ai peer.AddrInfo) {
@@ -72,8 +108,7 @@ func (pm *PeerManager) handleCandidate(ctx context.Context, ai peer.AddrInfo) {
 	}
 
 	// Check peer cap.
-	peerCount := len(pm.h.Network().Peers())
-	if peerCount >= pm.maxPeers {
+	if pm.maxPeers > 0 && len(pm.h.Network().Peers()) >= pm.maxPeers {
 		return
 	}
 

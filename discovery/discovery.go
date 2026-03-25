@@ -12,7 +12,6 @@ import (
 	"slices"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/OffchainLabs/prysm/v7/config/params"
@@ -139,15 +138,13 @@ func StartDiscovery(ctx context.Context, h host.Host, cfg Config) (*discover.UDP
 	return listener, nil
 }
 
-const maxConcurrentDials = 500
-const dialTimeout = 4 * time.Second
-
 func discoverPeers(ctx context.Context, h host.Host, iterator enode.Iterator, cfg Config) {
 	defer iterator.Close()
 	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
 
 	// Crawl mode: open file for appending ENRs and track seen peers.
+	// Register a network notifee so ENRs are written when PeerManager connects.
 	var crawlWriter *crawlFileWriter
 	if cfg.CrawlFile != "" {
 		var err error
@@ -157,11 +154,13 @@ func discoverPeers(ctx context.Context, h host.Host, iterator enode.Iterator, cf
 			return
 		}
 		defer crawlWriter.Close()
-	}
 
-	// Crawl mode dials directly with a semaphore.
-	sem := make(chan struct{}, maxConcurrentDials)
-	var inFlightDials atomic.Int64
+		h.Network().Notify(&network.NotifyBundle{
+			ConnectedF: func(_ network.Network, conn network.Conn) {
+				crawlWriter.WriteConnected(conn.RemotePeer())
+			},
+		})
+	}
 
 	for {
 		select {
@@ -170,7 +169,7 @@ func discoverPeers(ctx context.Context, h host.Host, iterator enode.Iterator, cf
 		case <-ticker.C:
 			quic, tcp := countPeersByTransport(h)
 			total := quic + tcp
-			slog.Info("connected peers", "total", total, "quic", quic, "tcp", tcp, "in_flight_dials", inFlightDials.Load())
+			slog.Info("connected peers", "total", total, "quic", quic, "tcp", tcp)
 			metrics.ConnectedPeers.Set(float64(total))
 			metrics.QUICPeers.Set(float64(quic))
 			metrics.TCPPeers.Set(float64(tcp))
@@ -203,47 +202,19 @@ func discoverPeers(ctx context.Context, h host.Host, iterator enode.Iterator, cf
 			continue
 		}
 
-		// Normal mode: send to PeerManager via channel (blocks when full = backpressure).
-		if cfg.Candidates != nil {
-			select {
-			case cfg.Candidates <- *addrInfo:
-			case <-ctx.Done():
-				return
+		// In crawl mode, register the ENR before sending to PeerManager.
+		if crawlWriter != nil {
+			if crawlWriter.HasPeer(addrInfo.ID) {
+				continue
 			}
-			continue
-		}
-
-		// Crawl mode: dial directly.
-		if crawlWriter != nil && crawlWriter.HasPeer(addrInfo.ID) {
-			continue
+			crawlWriter.RegisterENR(addrInfo.ID, node.String())
 		}
 
 		select {
-		case sem <- struct{}{}:
+		case cfg.Candidates <- *addrInfo:
 		case <-ctx.Done():
 			return
 		}
-
-		go func(ai peer.AddrInfo, n *enode.Node) {
-			inFlightDials.Add(1)
-			defer func() { inFlightDials.Add(-1); <-sem }()
-			connectCtx, cancel := context.WithTimeout(ctx, dialTimeout)
-			defer cancel()
-			connectCtx = network.WithDialPeerTimeout(connectCtx, dialTimeout)
-			if err := h.Connect(connectCtx, ai); err != nil {
-				slog.Info("failed to connect", "peer", peerShort(ai.ID), "error", err)
-			} else {
-				conns := h.Network().ConnsToPeer(ai.ID)
-				var remoteAddr string
-				if len(conns) > 0 {
-					remoteAddr = conns[0].RemoteMultiaddr().String()
-				}
-				slog.Info("connected to peer", "peer", peerShort(ai.ID), "remote_addr", remoteAddr)
-				if crawlWriter != nil {
-					crawlWriter.WriteENR(ai.ID, n.String())
-				}
-			}
-		}(*addrInfo, node)
 	}
 }
 
@@ -381,11 +352,14 @@ func isQUICConn(c network.Conn) bool {
 }
 
 // crawlFileWriter writes ENRs to a file with deduplication.
+// Discovery calls RegisterENR when sending a candidate to PeerManager,
+// and WriteConnected is called via a network notifee when the peer connects.
 type crawlFileWriter struct {
-	mu   sync.Mutex
-	f    *os.File
-	w    *bufio.Writer
-	seen map[peer.ID]struct{}
+	mu      sync.Mutex
+	f       *os.File
+	w       *bufio.Writer
+	seen    map[peer.ID]struct{}
+	pending map[peer.ID]string // peer ID -> ENR string, awaiting connection
 }
 
 func newCrawlFileWriter(path string) (*crawlFileWriter, error) {
@@ -394,9 +368,10 @@ func newCrawlFileWriter(path string) (*crawlFileWriter, error) {
 		return nil, err
 	}
 	return &crawlFileWriter{
-		f:    f,
-		w:    bufio.NewWriter(f),
-		seen: make(map[peer.ID]struct{}),
+		f:       f,
+		w:       bufio.NewWriter(f),
+		seen:    make(map[peer.ID]struct{}),
+		pending: make(map[peer.ID]string),
 	}, nil
 }
 
@@ -404,12 +379,28 @@ func (c *crawlFileWriter) HasPeer(id peer.ID) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	_, ok := c.seen[id]
+	if !ok {
+		_, ok = c.pending[id]
+	}
 	return ok
 }
 
-func (c *crawlFileWriter) WriteENR(id peer.ID, enrStr string) {
+// RegisterENR stores the ENR for a peer that has been sent to PeerManager for dialing.
+func (c *crawlFileWriter) RegisterENR(id peer.ID, enrStr string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	c.pending[id] = enrStr
+}
+
+// WriteConnected writes the ENR for a peer that has successfully connected.
+func (c *crawlFileWriter) WriteConnected(id peer.ID) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	enrStr, ok := c.pending[id]
+	if !ok {
+		return
+	}
+	delete(c.pending, id)
 	if _, ok := c.seen[id]; ok {
 		return
 	}
