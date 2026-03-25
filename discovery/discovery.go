@@ -454,7 +454,7 @@ func DialBootstrapPeers(
 	for _, line := range nodeStrings {
 		node, err := enode.Parse(enode.ValidSchemes, line)
 		if err != nil {
-			slog.Debug("bootstrap: failed to parse ENR", "error", err)
+			slog.Info("bootstrap: failed to parse ENR", "error", err)
 			continue
 		}
 		select {
@@ -468,7 +468,7 @@ func DialBootstrapPeers(
 			// Refresh ENR via discv5 to get current subnet subscriptions.
 			freshNode, err := listener.RequestENR(node)
 			if err != nil {
-				slog.Debug("bootstrap: failed to refresh ENR", "peer", node.ID().TerminalString(), "error", err)
+				slog.Info("bootstrap: failed to refresh ENR", "peer", node.ID().TerminalString(), "error", err)
 				// Fall back to the stale ENR from the file.
 				freshNode = node
 			}
@@ -499,7 +499,7 @@ func DialBootstrapPeers(
 				defer cancel()
 				connectCtx = network.WithDialPeerTimeout(connectCtx, dialTimeout)
 				if err := h.Connect(connectCtx, ai); err != nil {
-					slog.Debug("bootstrap: failed to connect", "peer", peerShort(ai.ID), "error", err)
+					slog.Info("bootstrap: failed to connect", "peer", peerShort(ai.ID), "error", err)
 				} else {
 					slog.Info("bootstrap: connected", "peer", peerShort(ai.ID))
 				}

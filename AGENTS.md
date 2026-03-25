@@ -53,6 +53,15 @@ Key direct dependencies:
 - `go-ethereum` — discv5 discovery, crypto
 - `prometheus/client_golang` — metrics
 
+## Version Control
+
+This repo uses jj (Jujutsu). Prefer jj over git for all version control operations.
+
+- **Keep changes atomic and small.** Each change should contain exactly one logical piece of work. Never mix unrelated work into the same change.
+- When absorbing work from another branch, create a separate change for it — do not fold it into an existing unrelated change.
+- **Prefer rebase over merge commits.** When incorporating work from another branch, rebase the changes onto the target rather than creating merge commits. Keep the history linear.
+- Write clear, descriptive change descriptions with `jj describe`.
+
 ## Conventions
 
 - All packages have unit tests in `_test.go` files.

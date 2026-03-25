@@ -10,6 +10,7 @@ import (
 	"github.com/OffchainLabs/prysm/v7/beacon-chain/p2p/encoder"
 	"github.com/OffchainLabs/prysm/v7/consensus-types/primitives"
 	ethpb "github.com/OffchainLabs/prysm/v7/proto/prysm/v1alpha1"
+	fastssz "github.com/prysmaticlabs/fastssz"
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
@@ -17,10 +18,13 @@ import (
 )
 
 const (
-	statusProtocol   = "/eth2/beacon_chain/req/status/1/ssz_snappy"
-	pingProtocol     = "/eth2/beacon_chain/req/ping/1/ssz_snappy"
-	metadataProtocol = "/eth2/beacon_chain/req/metadata/2/ssz_snappy"
-	goodbyeProtocol  = "/eth2/beacon_chain/req/goodbye/1/ssz_snappy"
+	statusProtocolV1   = "/eth2/beacon_chain/req/status/1/ssz_snappy"
+	statusProtocolV2   = "/eth2/beacon_chain/req/status/2/ssz_snappy"
+	pingProtocol       = "/eth2/beacon_chain/req/ping/1/ssz_snappy"
+	metadataProtocolV1 = "/eth2/beacon_chain/req/metadata/1/ssz_snappy"
+	metadataProtocolV2 = "/eth2/beacon_chain/req/metadata/2/ssz_snappy"
+	metadataProtocolV3 = "/eth2/beacon_chain/req/metadata/3/ssz_snappy"
+	goodbyeProtocol    = "/eth2/beacon_chain/req/goodbye/1/ssz_snappy"
 
 	responseCodeSuccess = byte(0x00)
 
@@ -29,25 +33,30 @@ const (
 
 var enc = encoder.SszNetworkEncoder{}
 
-// StatusProvider returns our current Status message.
-type StatusProvider func() *ethpb.Status
+// StatusProvider returns our current StatusV2 message.
+type StatusProvider func() *ethpb.StatusV2
 
 // RegisterHandlers sets up RPC stream handlers on the host.
 func RegisterHandlers(h host.Host, statusProvider StatusProvider, attnets []byte) {
-	h.SetStreamHandler(protocol.ID(statusProtocol), func(stream network.Stream) {
+	statusHandler := func(stream network.Stream) {
 		defer stream.Close()
 		handleStatus(stream, statusProvider)
-	})
+	}
+	h.SetStreamHandler(protocol.ID(statusProtocolV1), statusHandler)
+	h.SetStreamHandler(protocol.ID(statusProtocolV2), statusHandler)
 
 	h.SetStreamHandler(protocol.ID(pingProtocol), func(stream network.Stream) {
 		defer stream.Close()
 		handlePing(stream)
 	})
 
-	h.SetStreamHandler(protocol.ID(metadataProtocol), func(stream network.Stream) {
+	metadataHandler := func(stream network.Stream) {
 		defer stream.Close()
 		handleMetadata(stream, attnets)
-	})
+	}
+	h.SetStreamHandler(protocol.ID(metadataProtocolV1), metadataHandler)
+	h.SetStreamHandler(protocol.ID(metadataProtocolV2), metadataHandler)
+	h.SetStreamHandler(protocol.ID(metadataProtocolV3), metadataHandler)
 
 	h.SetStreamHandler(protocol.ID(goodbyeProtocol), func(stream network.Stream) {
 		defer stream.Close()
@@ -66,14 +75,14 @@ func peerShort(id peer.ID) string {
 func handleStatus(stream network.Stream, statusProvider StatusProvider) {
 	stream.SetDeadline(time.Now().Add(streamTimeout))
 
-	// Read the peer's status.
-	var peerStatus ethpb.Status
+	// Read the peer's status. Try V2 first since it's a superset of V1.
+	var peerStatus ethpb.StatusV2
 	if err := enc.DecodeWithMaxLength(stream, &peerStatus); err != nil {
-		slog.Debug("failed to decode peer status", "error", err)
+		slog.Info("failed to decode peer status", "error", err)
 		return
 	}
 
-	slog.Debug("received status request",
+	slog.Info("received status request",
 		"peer", peerShort(stream.Conn().RemotePeer()),
 		"headSlot", peerStatus.HeadSlot,
 	)
@@ -81,11 +90,11 @@ func handleStatus(stream network.Stream, statusProvider StatusProvider) {
 	// Respond with our status.
 	ourStatus := statusProvider()
 	if _, err := stream.Write([]byte{responseCodeSuccess}); err != nil {
-		slog.Debug("failed to write status response code", "error", err)
+		slog.Info("failed to write status response code", "error", err)
 		return
 	}
 	if _, err := enc.EncodeWithMaxLength(stream, ourStatus); err != nil {
-		slog.Debug("failed to encode status response", "error", err)
+		slog.Info("failed to encode status response", "error", err)
 		return
 	}
 }
@@ -95,7 +104,7 @@ func handlePing(stream network.Stream) {
 
 	var ping primitives.SSZUint64
 	if err := enc.DecodeWithMaxLength(stream, &ping); err != nil {
-		slog.Debug("failed to decode ping", "error", err)
+		slog.Info("failed to decode ping", "error", err)
 		return
 	}
 
@@ -112,20 +121,47 @@ func handlePing(stream network.Stream) {
 func handleMetadata(stream network.Stream, attnets []byte) {
 	stream.SetDeadline(time.Now().Add(streamTimeout))
 
-	// MetaData request has no body. Respond with our metadata.
-	md := &ethpb.MetaDataV1{
-		SeqNumber: 0,
-		Attnets:   attnets,
-		Syncnets:  []byte{0},
-	}
-
 	if _, err := stream.Write([]byte{responseCodeSuccess}); err != nil {
 		return
 	}
+
+	// Respond with the appropriate metadata version based on stream protocol.
+	var md fastssz.Marshaler
+	switch string(stream.Protocol()) {
+	case metadataProtocolV3:
+		md = &ethpb.MetaDataV2{
+			SeqNumber:         0,
+			Attnets:           attnets,
+			Syncnets:          []byte{0},
+			CustodyGroupCount: 4,
+		}
+	case metadataProtocolV1:
+		md = &ethpb.MetaDataV0{
+			SeqNumber: 0,
+			Attnets:   attnets,
+		}
+	default: // V2
+		md = &ethpb.MetaDataV1{
+			SeqNumber: 0,
+			Attnets:   attnets,
+			Syncnets:  []byte{0},
+		}
+	}
+
 	if _, err := enc.EncodeWithMaxLength(stream, md); err != nil {
-		slog.Debug("failed to encode metadata response", "error", err)
+		slog.Info("failed to encode metadata response", "error", err)
 		return
 	}
+}
+
+var goodbyeReasons = map[uint64]string{
+	1:   "client shutdown",
+	2:   "irrelevant network",
+	3:   "fault/error",
+	128: "unable to verify network",
+	129: "too many peers",
+	250: "peer score too low",
+	251: "client banned this node",
 }
 
 func handleGoodbye(stream network.Stream) {
@@ -133,13 +169,20 @@ func handleGoodbye(stream network.Stream) {
 
 	var reason primitives.SSZUint64
 	if err := enc.DecodeWithMaxLength(stream, &reason); err != nil {
-		slog.Debug("failed to decode goodbye", "error", err)
+		slog.Info("failed to decode goodbye", "error", err)
 		return
 	}
 
-	slog.Debug("received goodbye",
+	code := uint64(reason)
+	msg := goodbyeReasons[code]
+	if msg == "" {
+		msg = "unknown"
+	}
+
+	slog.Info("received goodbye",
 		"peer", peerShort(stream.Conn().RemotePeer()),
-		"reason", uint64(reason),
+		"reason", msg,
+		"code", code,
 	)
 }
 
@@ -157,9 +200,9 @@ func sendStatus(h host.Host, peerID peer.ID, statusProvider StatusProvider) {
 	ctx, cancel := context.WithTimeout(context.Background(), streamTimeout)
 	defer cancel()
 
-	stream, err := h.NewStream(ctx, peerID, protocol.ID(statusProtocol))
+	stream, err := h.NewStream(ctx, peerID, protocol.ID(statusProtocolV2), protocol.ID(statusProtocolV1))
 	if err != nil {
-		slog.Debug("failed to open status stream", "peer", peerShort(peerID), "error", err)
+		slog.Info("failed to open status stream", "peer", peerShort(peerID), "error", err)
 		return
 	}
 	defer stream.Close()
@@ -168,47 +211,48 @@ func sendStatus(h host.Host, peerID peer.ID, statusProvider StatusProvider) {
 	// Send our status.
 	ourStatus := statusProvider()
 	if _, err := enc.EncodeWithMaxLength(stream, ourStatus); err != nil {
-		slog.Debug("failed to encode outbound status", "error", err)
+		slog.Info("failed to encode outbound status", "error", err)
 		return
 	}
 	if err := stream.CloseWrite(); err != nil {
-		slog.Debug("failed to close write on status stream", "error", err)
+		slog.Info("failed to close write on status stream", "error", err)
 		return
 	}
 
 	// Read the response code.
 	code := make([]byte, 1)
 	if _, err := io.ReadFull(stream, code); err != nil {
-		slog.Debug("failed to read status response code", "error", err)
+		slog.Info("failed to read status response code", "error", err)
 		return
 	}
 	if code[0] != responseCodeSuccess {
-		slog.Debug("peer returned non-success status", "code", code[0])
+		slog.Info("peer returned non-success status", "code", code[0])
 		return
 	}
 
 	// Read peer's status response.
-	var peerStatus ethpb.Status
+	var peerStatus ethpb.StatusV2
 	if err := enc.DecodeWithMaxLength(stream, &peerStatus); err != nil {
-		slog.Debug("failed to decode peer status response", "error", err)
+		slog.Info("failed to decode peer status response", "error", err)
 		return
 	}
 
-	slog.Debug("status handshake complete",
+	slog.Info("status handshake complete",
 		"peer", peerShort(peerID),
 		"headSlot", peerStatus.HeadSlot,
 	)
 }
 
-// MakeStatusProvider returns a function that provides our Status message.
+// MakeStatusProvider returns a function that provides our StatusV2 message.
 func MakeStatusProvider(forkDigest [4]byte) StatusProvider {
-	return func() *ethpb.Status {
-		return &ethpb.Status{
-			ForkDigest:     forkDigest[:],
-			FinalizedRoot:  make([]byte, 32),
-			FinalizedEpoch: 0,
-			HeadRoot:       make([]byte, 32),
-			HeadSlot:       0,
+	return func() *ethpb.StatusV2 {
+		return &ethpb.StatusV2{
+			ForkDigest:            forkDigest[:],
+			FinalizedRoot:         make([]byte, 32),
+			FinalizedEpoch:        0,
+			HeadRoot:              make([]byte, 32),
+			HeadSlot:              0,
+			EarliestAvailableSlot: 0,
 		}
 	}
 }
@@ -225,7 +269,7 @@ func MakeAttnetsBytes(subnetIDs []uint64) []byte {
 }
 
 // ForkDigestFromStatus creates fork digest hex string from a status message.
-func ForkDigestFromStatus(status *ethpb.Status) string {
+func ForkDigestFromStatus(status *ethpb.StatusV2) string {
 	if len(status.ForkDigest) < 4 {
 		return "unknown"
 	}

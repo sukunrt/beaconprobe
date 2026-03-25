@@ -38,13 +38,13 @@ func listenSubnet(ctx context.Context, sub Subscription, genesisTime time.Time, 
 
 		var att ethpb.SingleAttestation
 		if err := enc.DecodeGossip(msg.Data, &att); err != nil {
-			slog.Debug("failed to decode attestation", "subnet", sub.SubnetID, "error", err)
+			slog.Info("failed to decode attestation", "subnet", sub.SubnetID, "error", err)
 			continue
 		}
 
 		slotStart, err := slots.StartTime(genesisTime, att.Data.Slot)
 		if err != nil {
-			slog.Debug("failed to compute slot start time", "error", err)
+			slog.Info("failed to compute slot start time", "error", err)
 			continue
 		}
 
@@ -59,7 +59,7 @@ func listenSubnet(ctx context.Context, sub Subscription, genesisTime time.Time, 
 			metrics.LateAttestations.WithLabelValues(subnetLabel).Inc()
 		}
 
-		slog.Debug("attestation received",
+		slog.Info("attestation received",
 			"subnet", sub.SubnetID,
 			"slot", att.Data.Slot,
 			"timeInSlot", timeIntoSlot.Round(time.Millisecond),

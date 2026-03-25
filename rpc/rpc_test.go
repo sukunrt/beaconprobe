@@ -141,7 +141,7 @@ func TestMakeStatusProvider(t *testing.T) {
 }
 
 func TestForkDigestFromStatus(t *testing.T) {
-	status := &ethpb.Status{ForkDigest: []byte{0xab, 0xcd, 0xef, 0x01}}
+	status := &ethpb.StatusV2{ForkDigest: []byte{0xab, 0xcd, 0xef, 0x01}}
 	got := ForkDigestFromStatus(status)
 	if got != "abcdef01" {
 		t.Fatalf("got %q, want %q", got, "abcdef01")
@@ -149,7 +149,7 @@ func TestForkDigestFromStatus(t *testing.T) {
 }
 
 func TestForkDigestFromStatus_Short(t *testing.T) {
-	status := &ethpb.Status{ForkDigest: []byte{0xab}}
+	status := &ethpb.StatusV2{ForkDigest: []byte{0xab}}
 	got := ForkDigestFromStatus(status)
 	if got != "unknown" {
 		t.Fatalf("got %q, want %q", got, "unknown")
@@ -171,19 +171,20 @@ func TestStatusHandshake(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	stream, err := client.NewStream(ctx, server.ID(), protocol.ID(statusProtocol))
+	stream, err := client.NewStream(ctx, server.ID(), protocol.ID(statusProtocolV2))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer stream.Close()
 
 	// Send our status.
-	ourStatus := &ethpb.Status{
-		ForkDigest:     []byte{0x01, 0x02, 0x03, 0x04},
-		FinalizedRoot:  make([]byte, 32),
-		FinalizedEpoch: 100,
-		HeadRoot:       make([]byte, 32),
-		HeadSlot:       1000,
+	ourStatus := &ethpb.StatusV2{
+		ForkDigest:            []byte{0x01, 0x02, 0x03, 0x04},
+		FinalizedRoot:         make([]byte, 32),
+		FinalizedEpoch:        100,
+		HeadRoot:              make([]byte, 32),
+		HeadSlot:              1000,
+		EarliestAvailableSlot: 0,
 	}
 	enc := encoder.SszNetworkEncoder{}
 	if _, err := enc.EncodeWithMaxLength(stream, ourStatus); err != nil {
@@ -203,7 +204,7 @@ func TestStatusHandshake(t *testing.T) {
 	}
 
 	// Read server's status.
-	var serverStatus ethpb.Status
+	var serverStatus ethpb.StatusV2
 	if err := enc.DecodeWithMaxLength(stream, &serverStatus); err != nil {
 		t.Fatal(err)
 	}
@@ -267,7 +268,7 @@ func TestMetadataHandler(t *testing.T) {
 
 	// Register a simple metadata handler directly for test clarity.
 	handlerCalled := make(chan error, 1)
-	server.SetStreamHandler(protocol.ID(metadataProtocol), func(stream network.Stream) {
+	server.SetStreamHandler(protocol.ID(metadataProtocolV2), func(stream network.Stream) {
 		defer stream.Close()
 		mdResp := &ethpb.MetaDataV1{SeqNumber: 0, Attnets: attnets, Syncnets: []byte{0}}
 		sszEnc := encoder.SszNetworkEncoder{}
@@ -287,7 +288,7 @@ func TestMetadataHandler(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	stream, err := client.NewStream(ctx, server.ID(), protocol.ID(metadataProtocol))
+	stream, err := client.NewStream(ctx, server.ID(), protocol.ID(metadataProtocolV2))
 	if err != nil {
 		t.Fatal(err)
 	}
