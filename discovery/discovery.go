@@ -35,6 +35,14 @@ type quicProtocol uint16
 
 func (quicProtocol) ENRKey() string { return "quic" }
 
+// PeerRouter routes discovered peers to the appropriate instance's PeerManager.
+type PeerRouter interface {
+	// Route assigns the peer to an instance and sends it to the corresponding PeerManager.
+	Route(ai peer.AddrInfo)
+	// IsConnectedToAny returns true if any instance is already connected to the peer.
+	IsConnectedToAny(id peer.ID) bool
+}
+
 // Config holds discovery configuration.
 type Config struct {
 	PrivKey      *ecdsa.PrivateKey
@@ -44,8 +52,10 @@ type Config struct {
 	SubnetIDs    []uint64
 	AttnetsBytes []byte
 	QuicOnly     bool
-	CrawlFile    string // If non-empty, run in crawl mode and write ENRs to this file.
-	Candidates   chan<- peer.AddrInfo // PeerManager candidates channel; nil in crawl mode.
+	ActiveCrawl  bool        // If true, spawn discoverPeers loop. Only first instance sets this.
+	CrawlFile    string      // If non-empty, run in crawl mode and write ENRs to this file.
+	Router       PeerRouter  // Probe mode: routes peers to instances. Nil in crawl mode.
+	Candidates   chan<- peer.AddrInfo // Crawl mode only: single PeerManager channel. Nil in probe mode.
 }
 
 // StartDiscovery starts discv5 and a peer connection loop.
@@ -110,28 +120,31 @@ func StartDiscovery(ctx context.Context, h host.Host, cfg Config) (*discover.UDP
 	}
 	slog.Info("discv5 listener started")
 
-	// Run discv5 peer discovery loop with fork digest pre-filter.
-	forkFilter := enode.Filter(listener.RandomNodes(), func(n *enode.Node) bool {
-		return matchesForkDigest(n, cfg.ForkDigest)
-	})
-	go discoverPeers(ctx, h, forkFilter, cfg)
-
-	// Optionally start discv4 scanner.
-	if cfg.DiscV4Port != 0 {
-		v4Addr := &net.UDPAddr{IP: net.IPv4zero, Port: int(cfg.DiscV4Port)}
-		v4Conn, err := net.ListenUDP("udp", v4Addr)
-		if err != nil {
-			return nil, fmt.Errorf("listen udp v4: %w", err)
-		}
-		v4Listener, err := discover.ListenV4(v4Conn, localNode, dv5Cfg)
-		if err != nil {
-			return nil, fmt.Errorf("listen discv4: %w", err)
-		}
-		slog.Info("discv4 listener started", "port", cfg.DiscV4Port)
-		v4ForkFilter := enode.Filter(v4Listener.RandomNodes(), func(n *enode.Node) bool {
+	// Only the active crawler spawns the discoverPeers loop.
+	// Other instances just serve their discv5 ENR without crawling.
+	if cfg.ActiveCrawl {
+		forkFilter := enode.Filter(listener.RandomNodes(), func(n *enode.Node) bool {
 			return matchesForkDigest(n, cfg.ForkDigest)
 		})
-		go discoverPeers(ctx, h, v4ForkFilter, cfg)
+		go discoverPeers(ctx, h, forkFilter, cfg)
+
+		// Optionally start discv4 scanner.
+		if cfg.DiscV4Port != 0 {
+			v4Addr := &net.UDPAddr{IP: net.IPv4zero, Port: int(cfg.DiscV4Port)}
+			v4Conn, err := net.ListenUDP("udp", v4Addr)
+			if err != nil {
+				return nil, fmt.Errorf("listen udp v4: %w", err)
+			}
+			v4Listener, err := discover.ListenV4(v4Conn, localNode, dv5Cfg)
+			if err != nil {
+				return nil, fmt.Errorf("listen discv4: %w", err)
+			}
+			slog.Info("discv4 listener started", "port", cfg.DiscV4Port)
+			v4ForkFilter := enode.Filter(v4Listener.RandomNodes(), func(n *enode.Node) bool {
+				return matchesForkDigest(n, cfg.ForkDigest)
+			})
+			go discoverPeers(ctx, h, v4ForkFilter, cfg)
+		}
 	}
 
 	return listener, nil
@@ -191,7 +204,12 @@ func discoverPeers(ctx context.Context, h host.Host, iterator enode.Iterator, cf
 			continue
 		}
 
-		if h.Network().Connectedness(addrInfo.ID) == network.Connected {
+		// Check if already connected (via router for multi-instance, or single host for crawl).
+		if cfg.Router != nil {
+			if cfg.Router.IsConnectedToAny(addrInfo.ID) {
+				continue
+			}
+		} else if h.Network().Connectedness(addrInfo.ID) == network.Connected {
 			continue
 		}
 
@@ -203,10 +221,15 @@ func discoverPeers(ctx context.Context, h host.Host, iterator enode.Iterator, cf
 			crawlWriter.RegisterENR(addrInfo.ID, node.String())
 		}
 
-		select {
-		case cfg.Candidates <- *addrInfo:
-		case <-ctx.Done():
-			return
+		// Route to the appropriate instance (probe mode) or send to single channel (crawl mode).
+		if cfg.Router != nil {
+			cfg.Router.Route(*addrInfo)
+		} else {
+			select {
+			case cfg.Candidates <- *addrInfo:
+			case <-ctx.Done():
+				return
+			}
 		}
 	}
 }
@@ -405,16 +428,15 @@ func (c *crawlFileWriter) Close() error {
 
 // DialBootstrapPeers reads ENRs from a file, refreshes each via discv5
 // RequestENR to get current subnet subscriptions, filters by subnet overlap,
-// and sends matching peers to the candidates channel.
+// and routes matching peers via the PeerRouter.
 func DialBootstrapPeers(
 	ctx context.Context,
-	h host.Host,
 	listener *discover.UDPv5,
+	router PeerRouter,
 	filePath string,
 	forkDigest [4]byte,
 	subnetIDs []uint64,
 	quicOnly bool,
-	candidates chan<- peer.AddrInfo,
 ) {
 	f, err := os.Open(filePath)
 	if err != nil {
@@ -436,6 +458,9 @@ func DialBootstrapPeers(
 		func(i, j int) { nodeStrings[i], nodeStrings[j] = nodeStrings[j], nodeStrings[i] })
 
 	for _, line := range nodeStrings {
+		if ctx.Err() != nil {
+			return
+		}
 		node, err := enode.Parse(enode.ValidSchemes, line)
 		if err != nil {
 			slog.Info("bootstrap: failed to parse ENR", "error", err)
@@ -466,15 +491,11 @@ func DialBootstrapPeers(
 			continue
 		}
 
-		if h.Network().Connectedness(addrInfo.ID) == network.Connected {
+		if router.IsConnectedToAny(addrInfo.ID) {
 			continue
 		}
 
-		select {
-		case candidates <- *addrInfo:
-		case <-ctx.Done():
-			return
-		}
+		router.Route(*addrInfo)
 	}
 	slog.Info("bootstrap: finished reading file")
 }

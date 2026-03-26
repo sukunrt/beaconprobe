@@ -14,19 +14,19 @@ var blockBuckets = []float64{0.1, 0.25, 0.5, 1, 2, 3, 4, 5, 6, 8, 10, 12}
 // Metrics holds per-instance Prometheus metrics. Each instance gets its own
 // Metrics with a "probe" label automatically prepended via WrapRegistererWith.
 type Metrics struct {
-	AttestationLatency               *prometheus.HistogramVec
+	AttestationLatency                *prometheus.HistogramVec
 	AttestationLatencyFromFourSeconds *prometheus.HistogramVec
-	AttestationArrivalInSlot         *prometheus.HistogramVec
-	AttestationsReceived             *prometheus.CounterVec
-	LateAttestations                 *prometheus.CounterVec
-	BlockArrivalInSlot               prometheus.Histogram
-	BlocksReceived                   prometheus.Counter
-	ConnectedPeers                   prometheus.Gauge
-	QUICPeers                        prometheus.Gauge
-	TCPPeers                         prometheus.Gauge
-	PeerUserAgents                   *prometheus.GaugeVec
-	DialAttempts                     prometheus.Counter
-	DialBackoffs                     prometheus.Counter
+	AttestationArrivalInSlot          *prometheus.HistogramVec
+	AttestationsReceived              *prometheus.CounterVec
+	LateAttestations                  *prometheus.CounterVec
+	BlockArrivalInSlot                prometheus.Histogram
+	BlocksReceived                    prometheus.Counter
+	ConnectedPeers                    prometheus.Gauge
+	QUICPeers                         prometheus.Gauge
+	TCPPeers                          prometheus.Gauge
+	PeerUserAgents                    *prometheus.GaugeVec
+	DialAttempts                      prometheus.Counter
+	DialBackoffs                      prometheus.Counter
 }
 
 // NewMetrics creates per-instance metrics registered under the given probe name.

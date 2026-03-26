@@ -21,3 +21,4 @@
 - Too many IWANTs too, need to use slot sessioning.
 - The crawler is really slow in Prysm. We much benchmark this number. 
 - Modify prysm to test crawler as an empty validator. We want a mode where we pretend to be a validator. 
+- segregate peers by rtt! This will probably give us a good set of mesh propagation time. 

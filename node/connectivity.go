@@ -37,6 +37,9 @@ func ReportConnectivity(ctx context.Context, h host.Host, m *metrics.Metrics) {
 func CountPeersByTransport(h host.Host) (quic, tcp int) {
 	for _, p := range h.Network().Peers() {
 		conns := h.Network().ConnsToPeer(p)
+		if len(conns) == 0 {
+			continue // peer disconnected between Peers() and ConnsToPeer()
+		}
 		if slices.ContainsFunc(conns, isQUICConn) {
 			quic++
 		} else {
