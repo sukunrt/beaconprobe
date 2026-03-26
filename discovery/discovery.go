@@ -137,15 +137,13 @@ func StartDiscovery(ctx context.Context, h host.Host, cfg Config) (*discover.UDP
 				slog.Error("failed to open crawl file", "path", cfg.CrawlFile, "error", err)
 				return nil, err
 			}
-			defer crawlWriter.Close()
-
 			h.Network().Notify(&network.NotifyBundle{
 				ConnectedF: func(_ network.Network, conn network.Conn) {
 					crawlWriter.WriteConnected(conn.RemotePeer())
 				},
 			})
 		}
-		go discoverPeers(ctx, h, forkFilter, cfg)
+		go discoverPeers(ctx, h, forkFilter, cfg, crawlWriter)
 
 		// Optionally start discv4 scanner.
 		if cfg.DiscV4Port != 0 {
@@ -162,14 +160,14 @@ func StartDiscovery(ctx context.Context, h host.Host, cfg Config) (*discover.UDP
 			v4ForkFilter := enode.Filter(v4Listener.RandomNodes(), func(n *enode.Node) bool {
 				return matchesForkDigest(n, cfg.ForkDigest)
 			})
-			go discoverPeers(ctx, h, v4ForkFilter, cfg)
+			go discoverPeers(ctx, h, v4ForkFilter, cfg, crawlWriter)
 		}
 	}
 
 	return listener, nil
 }
 
-func discoverPeers(ctx context.Context, h host.Host, iterator enode.Iterator, cfg Config) {
+func discoverPeers(ctx context.Context, h host.Host, iterator enode.Iterator, cfg Config, crawlWriter *crawlFileWriter) {
 	defer iterator.Close()
 
 	for {
@@ -422,10 +420,10 @@ func (c *crawlFileWriter) Close() error {
 	return c.f.Close()
 }
 
-// DialBootstrapPeers reads ENRs from a file, refreshes each via discv5
+// RouteBootstrapPeers reads ENRs from a file, refreshes each via discv5
 // RequestENR to get current subnet subscriptions, filters by subnet overlap,
 // and routes matching peers via the PeerRouter.
-func DialBootstrapPeers(
+func RouteBootstrapPeers(
 	ctx context.Context,
 	listener *discover.UDPv5,
 	router PeerRouter,

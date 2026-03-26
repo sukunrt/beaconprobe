@@ -7,7 +7,7 @@ require (
 	github.com/ethereum/go-ethereum v1.17.1
 	github.com/libp2p/go-libp2p v0.47.0
 	github.com/libp2p/go-libp2p-mplex v0.11.1-0.20260319205417-d6fca62531f8
-	github.com/libp2p/go-libp2p-pubsub v0.15.1-0.20260326065806-d2d2138af367
+	github.com/libp2p/go-libp2p-pubsub v0.15.1-0.20260326101350-8888c85294f6
 	github.com/multiformats/go-multiaddr v0.16.0
 	github.com/prometheus/client_golang v1.22.0
 	github.com/prometheus/client_model v0.6.2

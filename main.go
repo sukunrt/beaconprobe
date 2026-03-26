@@ -325,7 +325,7 @@ func runProbe(
 	if cfg.BootstrapFile != "" {
 		go func() {
 			for {
-				discovery.DialBootstrapPeers(ctx, firstListener, router, cfg.BootstrapFile, forkDigest, subnetIDs, cfg.Instances[0].QuicOnly)
+				discovery.RouteBootstrapPeers(ctx, firstListener, router, cfg.BootstrapFile, forkDigest, subnetIDs, cfg.Instances[0].QuicOnly)
 				select {
 				case <-ctx.Done():
 					return
