@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/hex"
 	"fmt"
+	"log/slog"
+	"os"
 	"time"
 
 	"github.com/OffchainLabs/prysm/v7/beacon-chain/p2p"
@@ -36,6 +38,10 @@ func NewGossipSub(ctx context.Context, h host.Host, genesisValRoot []byte, d int
 	}
 	scoreParams, scoreThresholds := PeerScoreConfig(topicScores)
 
+	rpcLogger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{
+		Level: slog.LevelDebug, // rpcs are logged at debug
+	}))
+
 	opts := []pubsub.Option{
 		pubsub.WithPeerScore(scoreParams, scoreThresholds),
 		pubsub.WithGossipSubParams(gsParams),
@@ -46,6 +52,7 @@ func NewGossipSub(ctx context.Context, h host.Host, genesisValRoot []byte, d int
 		pubsub.WithMaxMessageSize(int(params.BeaconConfig().MaxPayloadSize)),
 		pubsub.WithValidateQueueSize(256),
 		pubsub.WithPrometheusTracer(gossipLogFile),
+		pubsub.WithRPCLogger(rpcLogger),
 	}
 	if disableIHave {
 		opts = append(opts, pubsub.WithDisableIHaveGossip(true))
