@@ -30,46 +30,62 @@ type backoffEntry struct {
 
 // PeerManager manages peer connections with backpressure, backoff, and peer caps.
 type PeerManager struct {
-	h          host.Host
-	maxPeers   int // 0 = no cap (crawl mode)
-	Candidates chan peer.AddrInfo
-	m          *metrics.Metrics
+	h            host.Host
+	maxPeers     int // 0 = no cap (crawl mode)
+	instanceName string
+	peerFinder   *PeerFinder
+	m            *metrics.Metrics
 
 	mu      sync.Mutex
 	backoff map[peer.ID]backoffEntry
 }
 
 // NewPeerManager creates a PeerManager. maxPeers=0 means no peer cap (crawl mode).
-func NewPeerManager(h host.Host, maxPeers int, m *metrics.Metrics) *PeerManager {
+func NewPeerManager(h host.Host, maxPeers int, instanceName string, peerFinder *PeerFinder, m *metrics.Metrics) *PeerManager {
 	return &PeerManager{
-		h:          h,
-		maxPeers:   maxPeers,
-		Candidates: make(chan peer.AddrInfo, 64),
-		backoff:    make(map[peer.ID]backoffEntry),
-		m:          m,
+		h:            h,
+		maxPeers:     maxPeers,
+		instanceName: instanceName,
+		peerFinder:   peerFinder,
+		backoff:      make(map[peer.ID]backoffEntry),
+		m:            m,
 	}
 }
 
-// Run processes candidates until ctx is cancelled.
+const (
+	pullInterval = 500 * time.Millisecond
+	pullBatch    = 50
+)
+
+// Run pulls peers from PeerFinder and dials them until ctx is cancelled.
 func (pm *PeerManager) Run(ctx context.Context) {
 	sem := make(chan struct{}, maxConcurrentDials)
 	var inFlight atomic.Int64
 
 	for {
-		// Gate: if peers + in-flight dials >= maxPeers + 20, wait for ticker.
 		if pm.tooManyInFlight(&inFlight) {
 			select {
 			case <-ctx.Done():
 				return
-			case <-time.After(10 * time.Second):
+			case <-time.After(peerCheckInterval):
 				continue
 			}
 		}
 
-		select {
-		case <-ctx.Done():
-			return
-		case ai := <-pm.Candidates:
+		peers := pm.peerFinder.GetPeers(pm.instanceName, pullBatch, pm.shouldSkip)
+		if len(peers) == 0 {
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(pullInterval):
+			}
+			continue
+		}
+
+		for _, ai := range peers {
+			if pm.tooManyInFlight(&inFlight) {
+				break
+			}
 			select {
 			case sem <- struct{}{}:
 			case <-ctx.Done():
@@ -80,11 +96,15 @@ func (pm *PeerManager) Run(ctx context.Context) {
 				defer func() { <-sem; inFlight.Add(-1) }()
 				pm.handleCandidate(ctx, ai)
 			}()
-			if pm.tooManyInFlight(&inFlight) {
-				continue
-			}
 		}
 	}
+}
+
+func (pm *PeerManager) shouldSkip(id peer.ID) bool {
+	if pm.h.Network().Connectedness(id) == network.Connected {
+		return true
+	}
+	return pm.inBackoff(id)
 }
 
 func (pm *PeerManager) tooManyInFlight(inFlight *atomic.Int64) bool {

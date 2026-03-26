@@ -22,3 +22,5 @@
 - The crawler is really slow in Prysm. We much benchmark this number. 
 - Modify prysm to test crawler as an empty validator. We want a mode where we pretend to be a validator. 
 - segregate peers by rtt! This will probably give us a good set of mesh propagation time. 
+- if we disable sending, we can check when all of our peers receive a message because that's when they push us the message. 
+-

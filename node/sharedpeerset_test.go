@@ -86,7 +86,7 @@ func TestSharedPeerSetRoundRobinBalance(t *testing.T) {
 
 	counts := make(map[string]int)
 	n := 30
-	for i := 0; i < n; i++ {
+	for range n {
 		p := generatePeerID(t)
 		owner := ps.AssignOrGet(p)
 		counts[owner]++
@@ -113,7 +113,7 @@ func TestSharedPeerSetConcurrent(t *testing.T) {
 	results := make([]string, numPeers)
 
 	// Multiple goroutines assign the same peers concurrently.
-	for i := 0; i < numPeers; i++ {
+	for i := range numPeers {
 		wg.Add(2)
 		i := i
 		go func() {

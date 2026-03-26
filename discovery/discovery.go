@@ -53,9 +53,7 @@ type Config struct {
 	QuicOnly     bool
 	ActiveCrawl  bool                 // If true, spawn discoverPeers loop. Only first instance sets this.
 	CrawlFile    string               // If non-empty, run in crawl mode and write ENRs to this file.
-	Router       PeerRouter           // Probe mode: routes peers to instances. Nil in crawl mode.
-	Candidates   chan<- peer.AddrInfo // Crawl mode only: single PeerManager channel. Nil in probe mode.
-
+	Router PeerRouter // Routes discovered peers to instances.
 }
 
 // StartDiscovery starts discv5 and a peer connection loop.
@@ -143,7 +141,7 @@ func StartDiscovery(ctx context.Context, h host.Host, cfg Config) (*discover.UDP
 				},
 			})
 		}
-		go discoverPeers(ctx, h, forkFilter, cfg, crawlWriter)
+		go discoverPeers(ctx, forkFilter, cfg, crawlWriter)
 
 		// Optionally start discv4 scanner.
 		if cfg.DiscV4Port != 0 {
@@ -160,14 +158,14 @@ func StartDiscovery(ctx context.Context, h host.Host, cfg Config) (*discover.UDP
 			v4ForkFilter := enode.Filter(v4Listener.RandomNodes(), func(n *enode.Node) bool {
 				return matchesForkDigest(n, cfg.ForkDigest)
 			})
-			go discoverPeers(ctx, h, v4ForkFilter, cfg, crawlWriter)
+			go discoverPeers(ctx, v4ForkFilter, cfg, crawlWriter)
 		}
 	}
 
 	return listener, nil
 }
 
-func discoverPeers(ctx context.Context, h host.Host, iterator enode.Iterator, cfg Config, crawlWriter *crawlFileWriter) {
+func discoverPeers(ctx context.Context, iterator enode.Iterator, cfg Config, crawlWriter *crawlFileWriter) {
 	defer iterator.Close()
 
 	for {
@@ -199,12 +197,8 @@ func discoverPeers(ctx context.Context, h host.Host, iterator enode.Iterator, cf
 			continue
 		}
 
-		// Check if already connected (via router for multi-instance, or single host for crawl).
-		if cfg.Router != nil {
-			if cfg.Router.IsConnectedToAny(addrInfo.ID) {
-				continue
-			}
-		} else if h.Network().Connectedness(addrInfo.ID) == network.Connected {
+		// Check if already connected to any instance.
+		if cfg.Router.IsConnectedToAny(addrInfo.ID) {
 			continue
 		}
 
@@ -216,16 +210,7 @@ func discoverPeers(ctx context.Context, h host.Host, iterator enode.Iterator, cf
 			crawlWriter.RegisterENR(addrInfo.ID, node.String())
 		}
 
-		// Route to the appropriate instance (probe mode) or send to single channel (crawl mode).
-		if cfg.Router != nil {
-			cfg.Router.Route(*addrInfo)
-		} else {
-			select {
-			case cfg.Candidates <- *addrInfo:
-			case <-ctx.Done():
-				return
-			}
-		}
+		cfg.Router.Route(*addrInfo)
 	}
 }
 

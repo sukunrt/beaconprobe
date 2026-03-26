@@ -129,7 +129,9 @@ func runCrawl(
 	rpc.RegisterHandlers(h, statusProvider, attnetsBytes)
 	rpc.SendStatusOnConnect(h, statusProvider)
 
-	pm := node.NewPeerManager(h, 0, m) // no peer cap
+	peerSet := node.NewSharedPeerSet([]string{inst.Name})
+	peerFinder := node.NewPeerFinder(peerSet, map[string]host.Host{inst.Name: h})
+	pm := node.NewPeerManager(h, 0, inst.Name, peerFinder, m) // no peer cap
 	go pm.Run(ctx)
 	go node.ReportConnectivity(ctx, h, m)
 
@@ -143,7 +145,7 @@ func runCrawl(
 		QuicOnly:     inst.QuicOnly,
 		ActiveCrawl:  true,
 		CrawlFile:    cfg.CrawlFile,
-		Candidates:   pm.Candidates,
+		Router:       peerFinder,
 	}
 	if _, err := discovery.StartDiscovery(ctx, h, discCfg); err != nil {
 		slog.Error("failed to start discovery", "error", err)
@@ -194,10 +196,8 @@ func runProbe(
 	peerSet := node.NewSharedPeerSet(instanceNames)
 	blockTracker := node.NewBlockTracker()
 
-	// 4. Create all instances.
+	// 4. Create hosts for all instances.
 	hosts := make(map[string]host.Host, n)
-	candidateChans := make(map[string]chan<- peer.AddrInfo, n)
-	var logFiles []*os.File
 	for i, inst := range cfg.Instances {
 		name := inst.Name
 
@@ -209,7 +209,6 @@ func runProbe(
 			}
 		}
 
-		// Create gater and host.
 		gater := node.NewSiblingGater(name, siblingIDs, peerSet)
 		h, err := node.NewHostWithKey(cfg.TCPPort(i), cfg.QUICPort(i), keys[i], inst.QuicOnly, gater)
 		if err != nil {
@@ -218,7 +217,16 @@ func runProbe(
 		}
 		logHost(h, name)
 		hosts[name] = h
-		// Per-instance metrics.
+	}
+
+	// 5. Create PeerFinder (replaces MultiInstanceRouter).
+	peerFinder := node.NewPeerFinder(peerSet, hosts)
+
+	// 6. Set up per-instance services.
+	var logFiles []*os.File
+	for i, inst := range cfg.Instances {
+		name := inst.Name
+		h := hosts[name]
 		m := metrics.NewMetrics(name)
 
 		// RPC handlers.
@@ -229,9 +237,8 @@ func runProbe(
 		go node.TrackUserAgents(ctx, h, m)
 
 		// Peer manager.
-		pm := node.NewPeerManager(h, inst.MaxPeers, m)
+		pm := node.NewPeerManager(h, inst.MaxPeers, name, peerFinder, m)
 		go pm.Run(ctx)
-		candidateChans[name] = pm.Candidates
 
 		// Connectivity reporting.
 		go node.ReportConnectivity(ctx, h, m)
@@ -290,10 +297,7 @@ func runProbe(
 		node.ListenForAttestations(ctx, subs, genesisTime, blockTracker, fileLogger, m)
 	}
 
-	// 5. Create router.
-	router := node.NewMultiInstanceRouter(peerSet, candidateChans, hosts)
-
-	// 6. Start discovery for each instance.
+	// 7. Start discovery for each instance.
 	// Only the first instance actively crawls; others just serve their discv5 ENR.
 	var firstListener *discover.UDPv5
 	for i, inst := range cfg.Instances {
@@ -305,7 +309,7 @@ func runProbe(
 			AttnetsBytes: attnetsBytes,
 			QuicOnly:     inst.QuicOnly,
 			ActiveCrawl:  i == 0,
-			Router:       router,
+			Router:       peerFinder,
 		}
 		if i == 0 {
 			discCfg.DiscV4Port = cfg.DiscV4Port
@@ -321,11 +325,11 @@ func runProbe(
 		slog.Info("discovery started", "instance", inst.Name, "active_crawl", i == 0)
 	}
 
-	// 7. Bootstrap file (if provided).
+	// 8. Bootstrap file (if provided).
 	if cfg.BootstrapFile != "" {
 		go func() {
 			for {
-				discovery.RouteBootstrapPeers(ctx, firstListener, router, cfg.BootstrapFile, forkDigest, subnetIDs, cfg.Instances[0].QuicOnly)
+				discovery.RouteBootstrapPeers(ctx, firstListener, peerFinder, cfg.BootstrapFile, forkDigest, subnetIDs, cfg.Instances[0].QuicOnly)
 				select {
 				case <-ctx.Done():
 					return
