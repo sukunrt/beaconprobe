@@ -10,7 +10,7 @@ import (
 
 func TestBackoff_ExponentialIncrease(t *testing.T) {
 	h := newTestHost(t)
-	pm := NewPeerManager(h, 80)
+	pm := NewPeerManager(h, 80, newTestMetrics(t))
 
 	id := h.ID() // use own ID as dummy
 
@@ -38,7 +38,7 @@ func TestBackoff_ExponentialIncrease(t *testing.T) {
 
 func TestBackoff_CapsAtMax(t *testing.T) {
 	h := newTestHost(t)
-	pm := NewPeerManager(h, 80)
+	pm := NewPeerManager(h, 80, newTestMetrics(t))
 
 	id := h.ID()
 
@@ -55,7 +55,7 @@ func TestBackoff_CapsAtMax(t *testing.T) {
 
 func TestBackoff_ClearOnSuccess(t *testing.T) {
 	h := newTestHost(t)
-	pm := NewPeerManager(h, 80)
+	pm := NewPeerManager(h, 80, newTestMetrics(t))
 
 	id := h.ID()
 
@@ -75,7 +75,7 @@ func TestBackoff_ClearOnSuccess(t *testing.T) {
 
 func TestBackoff_ExpiredBackoffNotBlocking(t *testing.T) {
 	h := newTestHost(t)
-	pm := NewPeerManager(h, 80)
+	pm := NewPeerManager(h, 80, newTestMetrics(t))
 
 	id := h.ID()
 
@@ -94,7 +94,7 @@ func TestBackoff_ExpiredBackoffNotBlocking(t *testing.T) {
 
 func TestPeerManager_SkipsAtCap(t *testing.T) {
 	h := newTestHost(t)
-	pm := NewPeerManager(h, 10) // maxPeers = 10
+	pm := NewPeerManager(h, 10, newTestMetrics(t)) // maxPeers = 10
 
 	// Create 10 connected peers by connecting test hosts.
 	peers := make([]peer.AddrInfo, 10)
@@ -121,7 +121,7 @@ func TestPeerManager_SkipsAtCap(t *testing.T) {
 
 func TestPeerManager_DialsBelowCap(t *testing.T) {
 	h := newTestHost(t)
-	pm := NewPeerManager(h, 10) // maxPeers = 10, no peers connected
+	pm := NewPeerManager(h, 10, newTestMetrics(t)) // maxPeers = 10, no peers connected
 
 	target := newTestHost(t)
 	pm.handleCandidate(t.Context(), peer.AddrInfo{ID: target.ID(), Addrs: target.Addrs()})

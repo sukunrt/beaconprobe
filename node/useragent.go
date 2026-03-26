@@ -45,7 +45,7 @@ func normalizeUserAgent(raw string) string {
 // TrackUserAgents subscribes to identify and disconnect events to maintain
 // per-user-agent peer counts. It logs individual identify completions and
 // periodically logs aggregate user agent counts.
-func TrackUserAgents(ctx context.Context, h host.Host) {
+func TrackUserAgents(ctx context.Context, h host.Host, m *metrics.Metrics) {
 	identSub, err := h.EventBus().Subscribe(new(event.EvtPeerIdentificationCompleted))
 	if err != nil {
 		slog.Error("failed to subscribe to identify events", "error", err)
@@ -83,12 +83,12 @@ func TrackUserAgents(ctx context.Context, h host.Host) {
 				if counts[old] <= 0 {
 					delete(counts, old)
 				}
-				metrics.PeerUserAgents.WithLabelValues(old).Dec()
+				m.PeerUserAgents.WithLabelValues(old).Dec()
 			}
 
 			peers[ident.Peer] = ua
 			counts[ua]++
-			metrics.PeerUserAgents.WithLabelValues(ua).Inc()
+			m.PeerUserAgents.WithLabelValues(ua).Inc()
 			slog.Info("identified peer", "peer", peerShort(ident.Peer), "user_agent", ident.AgentVersion, "normalized", ua)
 
 		case ev, ok := <-connSub.Out():
@@ -108,7 +108,7 @@ func TrackUserAgents(ctx context.Context, h host.Host) {
 			if counts[ua] <= 0 {
 				delete(counts, ua)
 			}
-			metrics.PeerUserAgents.WithLabelValues(ua).Dec()
+			m.PeerUserAgents.WithLabelValues(ua).Dec()
 
 		case <-ticker.C:
 			slog.Info("peer user agents", "counts", counts)

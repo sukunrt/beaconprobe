@@ -11,6 +11,8 @@ require (
 	github.com/multiformats/go-multiaddr v0.16.0
 	github.com/prometheus/client_golang v1.22.0
 	github.com/prometheus/client_model v0.6.2
+	github.com/prysmaticlabs/fastssz v0.0.0-20251103153600-259302269bfc
+	gopkg.in/yaml.v3 v3.0.1
 )
 
 require (
@@ -123,7 +125,6 @@ require (
 	github.com/pkg/errors v0.9.1 // indirect
 	github.com/prometheus/common v0.64.0 // indirect
 	github.com/prometheus/procfs v0.16.1 // indirect
-	github.com/prysmaticlabs/fastssz v0.0.0-20251103153600-259302269bfc // indirect
 	github.com/prysmaticlabs/gohashtree v0.0.5-beta // indirect
 	github.com/prysmaticlabs/prombbolt v0.0.0-20210126082820-9b7adba6db7c // indirect
 	github.com/quic-go/qpack v0.6.0 // indirect
@@ -177,7 +178,6 @@ require (
 	google.golang.org/protobuf v1.36.11 // indirect
 	gopkg.in/inf.v0 v0.9.1 // indirect
 	gopkg.in/yaml.v2 v2.4.0 // indirect
-	gopkg.in/yaml.v3 v3.0.1 // indirect
 	k8s.io/apimachinery v0.30.4 // indirect
 	k8s.io/client-go v0.30.4 // indirect
 	k8s.io/klog/v2 v2.120.1 // indirect

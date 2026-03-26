@@ -9,7 +9,6 @@ import (
 	"math/rand/v2"
 	"net"
 	"os"
-	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -166,13 +165,7 @@ func discoverPeers(ctx context.Context, h host.Host, iterator enode.Iterator, cf
 		select {
 		case <-ctx.Done():
 			return
-		case <-ticker.C:
-			quic, tcp := countPeersByTransport(h)
-			total := quic + tcp
-			slog.Info("connected peers", "total", total, "quic", quic, "tcp", tcp)
-			metrics.ConnectedPeers.Set(float64(total))
-			metrics.QUICPeers.Set(float64(quic))
-			metrics.TCPPeers.Set(float64(tcp))
+		case <-ticker.C: // rate-limit: drain ticker to pace the discovery loop
 		default:
 		}
 
@@ -343,13 +336,6 @@ func hasQUICAddr(ai *peer.AddrInfo) bool {
 	return false
 }
 
-// isQUICConn returns true if the connection uses the QUIC transport.
-// RemoteMultiaddr() for QUIC connections is /ip4/x.x.x.x/udp/port (no /quic-v1 suffix),
-// so we detect QUIC by checking for /udp/ and absence of /tcp/.
-func isQUICConn(c network.Conn) bool {
-	s := c.RemoteMultiaddr().String()
-	return strings.Contains(s, "/udp/")
-}
 
 // crawlFileWriter writes ENRs to a file with deduplication.
 // Discovery calls RegisterENR when sending a candidate to PeerManager,
@@ -493,16 +479,3 @@ func DialBootstrapPeers(
 	slog.Info("bootstrap: finished reading file")
 }
 
-// countPeersByTransport returns the count of QUIC and TCP peers.
-func countPeersByTransport(h host.Host) (quic, tcp int) {
-	for _, p := range h.Network().Peers() {
-		conns := h.Network().ConnsToPeer(p)
-		isQUIC := slices.ContainsFunc(conns, isQUICConn)
-		if isQUIC {
-			quic++
-		} else {
-			tcp++
-		}
-	}
-	return
-}

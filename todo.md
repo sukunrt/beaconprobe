@@ -5,10 +5,19 @@
 - log the peers location too
 
 - Despite all of this, is the mesh still slower than we'd expect? 
-  - If some peers were consistently slow, then we'd expect the 50%ile to match us exactly. Is that matching? 
-  - for a node in india: 80%ile is 500ms from europe min and 250ms from europe max
-  - all 3 europe nodes converge around 80%ile very quickly. This number is 750 - 850ms. 
-  - the similarity of deciles suggests that we've probably picked the same peers in all the meshes. 
-  - we should at least get the first 50%ile of the votes asap. 
+    - The mesh is now reasonably in line with our model.
+    - model suggests 500ms => 75%ile
+    - our system 500ms => 60%ile
+    - most importantly higher percentiles cannot be mapped because they're all nodes that are voting just really late it's not on "gossipsub"
+
+- Now: 
+    - Let's triangulate the mesh:
+    - If we run 10 nodes. We can expect to be close to the source of the message. What we can do is see when we first get the message to the spread across the 10 observers and see how fast the message is propagating.  
 
 
+## Findings:
+- Some entities consistently slow
+- Too much IHAVE Traffic
+- Too many IWANTs too, need to use slot sessioning.
+- The crawler is really slow in Prysm. We much benchmark this number. 
+- Modify prysm to test crawler as an empty validator. We want a mode where we pretend to be a validator. 

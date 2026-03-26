@@ -10,6 +10,7 @@ import (
 	"github.com/OffchainLabs/prysm/v7/consensus-types/primitives"
 	ethpb "github.com/OffchainLabs/prysm/v7/proto/prysm/v1alpha1"
 	"github.com/OffchainLabs/prysm/v7/time/slots"
+
 	"github.com/sukunrt/beaconprobe/metrics"
 )
 
@@ -22,12 +23,12 @@ type bufferedAttestation struct {
 
 // ListenForAttestations buffers attestations per slot and logs them
 // once the slot completes, so block arrival status is known.
-func ListenForAttestations(ctx context.Context, subs []Subscription, genesisTime time.Time, blockTracker *BlockTracker, fileLogger *slog.Logger) {
+func ListenForAttestations(ctx context.Context, subs []Subscription, genesisTime time.Time, blockTracker *BlockTracker, fileLogger *slog.Logger, m *metrics.Metrics) {
 	ch := make(chan bufferedAttestation, 4096)
 	for _, s := range subs {
 		go collectSubnet(ctx, s, ch)
 	}
-	go flushSlots(ctx, ch, genesisTime, blockTracker, fileLogger)
+	go flushSlots(ctx, ch, genesisTime, blockTracker, fileLogger, m)
 }
 
 func collectSubnet(ctx context.Context, sub Subscription, ch chan<- bufferedAttestation) {
@@ -63,7 +64,7 @@ func nextSlotTimer(genesisTime time.Time) *time.Timer {
 	return time.NewTimer(time.Until(nextStart))
 }
 
-func flushSlots(ctx context.Context, ch <-chan bufferedAttestation, genesisTime time.Time, blockTracker *BlockTracker, fileLogger *slog.Logger) {
+func flushSlots(ctx context.Context, ch <-chan bufferedAttestation, genesisTime time.Time, blockTracker *BlockTracker, fileLogger *slog.Logger, m *metrics.Metrics) {
 	pending := make(map[primitives.Slot][]bufferedAttestation)
 	timer := nextSlotTimer(genesisTime)
 	defer timer.Stop()
@@ -78,7 +79,7 @@ func flushSlots(ctx context.Context, ch <-chan bufferedAttestation, genesisTime 
 			completedSlot := slots.CurrentSlot(genesisTime) - 1
 			for s, entries := range pending {
 				if s <= completedSlot {
-					go logSlotAttestations(s, entries, genesisTime, blockTracker, fileLogger)
+					go logSlotAttestations(s, entries, genesisTime, blockTracker, fileLogger, m)
 					delete(pending, s)
 				}
 			}
@@ -87,7 +88,7 @@ func flushSlots(ctx context.Context, ch <-chan bufferedAttestation, genesisTime 
 	}
 }
 
-func logSlotAttestations(slot primitives.Slot, entries []bufferedAttestation, genesisTime time.Time, blockTracker *BlockTracker, fileLogger *slog.Logger) {
+func logSlotAttestations(slot primitives.Slot, entries []bufferedAttestation, genesisTime time.Time, blockTracker *BlockTracker, fileLogger *slog.Logger, m *metrics.Metrics) {
 	slotStart, err := slots.StartTime(genesisTime, slot)
 	if err != nil {
 		slog.Info("failed to compute slot start time", "slot", slot, "error", err)
@@ -116,12 +117,12 @@ func logSlotAttestations(slot primitives.Slot, entries []bufferedAttestation, ge
 		arrivalDelay := e.receiveTime.Sub(blockTime)
 		subnetLabel := fmt.Sprintf("%d", e.subnetID)
 
-		metrics.AttestationsReceived.WithLabelValues(subnetLabel).Inc()
-		metrics.AttestationLatency.WithLabelValues(subnetLabel).Observe(arrivalDelay.Seconds())
-		metrics.AttestationLatencyFromFourSeconds.WithLabelValues(subnetLabel).Observe((timeIntoSlot - 4*time.Second).Seconds())
-		metrics.AttestationArrivalInSlot.WithLabelValues(subnetLabel).Observe(timeIntoSlot.Seconds())
+		m.AttestationsReceived.WithLabelValues(subnetLabel).Inc()
+		m.AttestationLatency.WithLabelValues(subnetLabel).Observe(arrivalDelay.Seconds())
+		m.AttestationLatencyFromFourSeconds.WithLabelValues(subnetLabel).Observe((timeIntoSlot - 4*time.Second).Seconds())
+		m.AttestationArrivalInSlot.WithLabelValues(subnetLabel).Observe(timeIntoSlot.Seconds())
 		if timeIntoSlot > 8*time.Second {
-			metrics.LateAttestations.WithLabelValues(subnetLabel).Inc()
+			m.LateAttestations.WithLabelValues(subnetLabel).Inc()
 		}
 
 		fileAttrs := []any{

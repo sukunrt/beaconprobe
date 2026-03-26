@@ -11,6 +11,7 @@ import (
 	ethpb "github.com/OffchainLabs/prysm/v7/proto/prysm/v1alpha1"
 	"github.com/OffchainLabs/prysm/v7/time/slots"
 	pubsub "github.com/libp2p/go-libp2p-pubsub"
+
 	"github.com/sukunrt/beaconprobe/metrics"
 )
 
@@ -55,7 +56,7 @@ func (bt *BlockTracker) cleanup(minSlot primitives.Slot) {
 }
 
 // ListenForBlocks listens for beacon block messages and records their arrival times.
-func ListenForBlocks(ctx context.Context, sub *pubsub.Subscription, genesisTime time.Time, tracker *BlockTracker, fileLogger *slog.Logger) {
+func ListenForBlocks(ctx context.Context, sub *pubsub.Subscription, genesisTime time.Time, tracker *BlockTracker, fileLogger *slog.Logger, m *metrics.Metrics) {
 	enc := encoder.SszNetworkEncoder{}
 	var lastCleanup primitives.Slot
 
@@ -87,8 +88,8 @@ func ListenForBlocks(ctx context.Context, sub *pubsub.Subscription, genesisTime 
 		timeIntoSlot := receiveTime.Sub(slotStart)
 
 		tracker.Record(slot, receiveTime)
-		metrics.BlocksReceived.Inc()
-		metrics.BlockArrivalInSlot.Observe(timeIntoSlot.Seconds())
+		m.BlocksReceived.Inc()
+		m.BlockArrivalInSlot.Observe(timeIntoSlot.Seconds())
 
 		slog.Info("block received",
 			"slot", slot,

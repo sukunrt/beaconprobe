@@ -12,6 +12,12 @@ import (
 	"github.com/sukunrt/beaconprobe/metrics"
 )
 
+func newTestMetrics(t *testing.T) *metrics.Metrics {
+	t.Helper()
+	reg := prometheus.NewPedanticRegistry()
+	return metrics.NewMetrics("test", reg)
+}
+
 func TestNormalizeUserAgent(t *testing.T) {
 	tests := []struct {
 		input string
@@ -45,8 +51,7 @@ func gaugeValue(g *prometheus.GaugeVec, label string) float64 {
 }
 
 func TestTrackUserAgents(t *testing.T) {
-	// Reset the gauge to avoid interference from other tests.
-	metrics.PeerUserAgents.Reset()
+	m := newTestMetrics(t)
 
 	// Create two hosts. Host B has a known user agent.
 	hostA, err := libp2p.New(
@@ -71,7 +76,7 @@ func TestTrackUserAgents(t *testing.T) {
 	ctx := t.Context()
 
 	// Start tracking on host A.
-	go TrackUserAgents(ctx, hostA)
+	go TrackUserAgents(ctx, hostA, m)
 
 	// Connect A → B.
 	hostA.Peerstore().AddAddrs(hostB.ID(), hostB.Addrs(), time.Hour)
@@ -82,7 +87,7 @@ func TestTrackUserAgents(t *testing.T) {
 	// Wait for identify to complete.
 	time.Sleep(500 * time.Millisecond)
 
-	if v := gaugeValue(metrics.PeerUserAgents, "TestClient/v3"); v != 1 {
+	if v := gaugeValue(m.PeerUserAgents, "TestClient/v3"); v != 1 {
 		t.Errorf("expected gauge for TestClient/v3 = 1, got %v", v)
 	}
 
@@ -94,7 +99,7 @@ func TestTrackUserAgents(t *testing.T) {
 	// Wait for disconnect event.
 	time.Sleep(500 * time.Millisecond)
 
-	if v := gaugeValue(metrics.PeerUserAgents, "TestClient/v3"); v != 0 {
+	if v := gaugeValue(m.PeerUserAgents, "TestClient/v3"); v != 0 {
 		t.Errorf("expected gauge for TestClient/v3 = 0 after disconnect, got %v", v)
 	}
 }

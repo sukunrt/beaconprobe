@@ -16,6 +16,8 @@ import (
 
 	"github.com/OffchainLabs/prysm/v7/config/params"
 	"github.com/OffchainLabs/prysm/v7/time/slots"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/collectors"
 	"github.com/sukunrt/beaconprobe/discovery"
 	"github.com/sukunrt/beaconprobe/metrics"
 	"github.com/sukunrt/beaconprobe/node"
@@ -93,8 +95,12 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// 1. Start Prometheus metrics server.
-	go metrics.Serve(*metricsAddr)
+	// 1. Set up Prometheus registry and metrics.
+	reg := prometheus.NewRegistry()
+	reg.MustRegister(collectors.NewGoCollector())
+	metrics.RegisterDiscoveryMetrics(reg)
+	m := metrics.NewMetrics("default", reg)
+	go metrics.Serve(*metricsAddr, reg)
 
 	// 2. Create libp2p host.
 	h, privKey, err := node.NewHost(*tcpPort, *quicPort, *keyFile, *quicOnly)
@@ -108,7 +114,7 @@ func main() {
 	}
 
 	// 3. Track peer user agents via identify events.
-	go node.TrackUserAgents(ctx, h)
+	go node.TrackUserAgents(ctx, h, m)
 
 	// 4. Register RPC handlers (before discovery so peers can handshake).
 	attnetsBytes := rpc.MakeAttnetsBytes(subnetIDs)
@@ -165,11 +171,11 @@ func main() {
 			}
 			slog.Info("subscribed to block topic", "topic", node.BlockTopic(forkDigest))
 			blockTracker = node.NewBlockTracker()
-			go node.ListenForBlocks(ctx, blockSub, genesisTime, blockTracker, fileLogger)
+			go node.ListenForBlocks(ctx, blockSub, genesisTime, blockTracker, fileLogger, m)
 		}
 
 		// Start attestation listener goroutines.
-		node.ListenForAttestations(ctx, subs, genesisTime, blockTracker, fileLogger)
+		node.ListenForAttestations(ctx, subs, genesisTime, blockTracker, fileLogger, m)
 	} else {
 		slog.Info("crawl mode: skipping gossipsub and attestation listener")
 	}
@@ -182,8 +188,9 @@ func main() {
 	if *crawlFile != "" {
 		maxPeers = 0 // no cap in crawl mode
 	}
-	pm := node.NewPeerManager(h, maxPeers)
+	pm := node.NewPeerManager(h, maxPeers, m)
 	go pm.Run(ctx)
+	go node.ReportConnectivity(ctx, h, m)
 	slog.Info("peer manager started", "maxPeers", maxPeers)
 
 	// 7. Start discv5 discovery + peer connection loop.
@@ -214,7 +221,7 @@ func main() {
 		}()
 	}
 
-	// 7. Wait for shutdown signal.
+	// 8. Wait for shutdown signal.
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 	sig := <-sigCh

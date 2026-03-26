@@ -11,6 +11,7 @@ import (
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
+
 	"github.com/sukunrt/beaconprobe/metrics"
 )
 
@@ -32,18 +33,20 @@ type PeerManager struct {
 	h          host.Host
 	maxPeers   int // 0 = no cap (crawl mode)
 	Candidates chan peer.AddrInfo
+	m          *metrics.Metrics
 
 	mu      sync.Mutex
 	backoff map[peer.ID]backoffEntry
 }
 
 // NewPeerManager creates a PeerManager. maxPeers=0 means no peer cap (crawl mode).
-func NewPeerManager(h host.Host, maxPeers int) *PeerManager {
+func NewPeerManager(h host.Host, maxPeers int, m *metrics.Metrics) *PeerManager {
 	return &PeerManager{
 		h:          h,
 		maxPeers:   maxPeers,
 		Candidates: make(chan peer.AddrInfo, 64),
 		backoff:    make(map[peer.ID]backoffEntry),
+		m:          m,
 	}
 }
 
@@ -103,7 +106,7 @@ func (pm *PeerManager) handleCandidate(ctx context.Context, ai peer.AddrInfo) {
 
 	// Check backoff.
 	if pm.inBackoff(ai.ID) {
-		metrics.DialBackoffs.Inc()
+		pm.m.DialBackoffs.Inc()
 		return
 	}
 
@@ -112,7 +115,7 @@ func (pm *PeerManager) handleCandidate(ctx context.Context, ai peer.AddrInfo) {
 		return
 	}
 
-	metrics.DialAttempts.Inc()
+	pm.m.DialAttempts.Inc()
 	connectCtx, cancel := context.WithTimeout(ctx, dialTimeout)
 	defer cancel()
 	connectCtx = network.WithDialPeerTimeout(connectCtx, dialTimeout)

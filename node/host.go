@@ -24,14 +24,22 @@ import (
 // If keyFile is non-empty, the key is loaded from (or saved to) that path.
 // If quicOnly is true, only the QUIC transport is configured (no TCP, yamux, or mplex).
 func NewHost(tcpPort, quicPort uint, keyFile string, quicOnly bool) (host.Host, *ecdsa.PrivateKey, error) {
-	privKey, err := loadOrGenerateKey(keyFile)
+	privKey, err := LoadOrGenerateKey(keyFile)
 	if err != nil {
 		return nil, nil, fmt.Errorf("key: %w", err)
 	}
+	h, err := NewHostWithKey(tcpPort, quicPort, privKey, quicOnly, nil)
+	if err != nil {
+		return nil, nil, err
+	}
+	return h, privKey, nil
+}
 
+// NewHostWithKey creates a libp2p host using a pre-loaded private key and optional ConnectionGater.
+func NewHostWithKey(tcpPort, quicPort uint, privKey *ecdsa.PrivateKey, quicOnly bool, gater connmgr.ConnectionGater) (host.Host, error) {
 	libp2pKey, err := crypto.UnmarshalSecp256k1PrivateKey(gcrypto.FromECDSA(privKey))
 	if err != nil {
-		return nil, nil, fmt.Errorf("convert key: %w", err)
+		return nil, fmt.Errorf("convert key: %w", err)
 	}
 
 	opts := []libp2p.Option{
@@ -42,6 +50,10 @@ func NewHost(tcpPort, quicPort uint, keyFile string, quicOnly bool) (host.Host, 
 		libp2p.ConnectionManager(&connmgr.NullConnMgr{}),
 		libp2p.UDPBlackHoleSuccessCounter(nil),
 		libp2p.IPv6BlackHoleSuccessCounter(nil),
+	}
+
+	if gater != nil {
+		opts = append(opts, libp2p.ConnectionGater(gater))
 	}
 
 	if quicOnly {
@@ -66,18 +78,19 @@ func NewHost(tcpPort, quicPort uint, keyFile string, quicOnly bool) (host.Host, 
 
 	h, err := libp2p.New(opts...)
 	if err != nil {
-		return nil, nil, fmt.Errorf("create libp2p host: %w", err)
+		return nil, fmt.Errorf("create libp2p host: %w", err)
 	}
 
-	return h, privKey, nil
+	return h, nil
 }
 
-// loadOrGenerateKey loads a secp256k1 private key from keyFile,
+// LoadOrGenerateKey loads a secp256k1 private key from keyFile,
 // or generates a new one (saving it to keyFile if non-empty).
 // Accepts both raw 32-byte and hex-encoded 64-byte key files.
-func loadOrGenerateKey(keyFile string) (*ecdsa.PrivateKey, error) {
+func LoadOrGenerateKey(keyFile string) (*ecdsa.PrivateKey, error) {
 	if keyFile != "" {
-		if src, err := os.ReadFile(keyFile); err == nil {
+		src, err := os.ReadFile(keyFile)
+		if err == nil {
 			if len(src) == 32 {
 				return gcrypto.ToECDSA(src)
 			}
@@ -86,6 +99,9 @@ func loadOrGenerateKey(keyFile string) (*ecdsa.PrivateKey, error) {
 				return nil, fmt.Errorf("decode key hex: %w", err)
 			}
 			return gcrypto.ToECDSA(raw)
+		}
+		if !os.IsNotExist(err) {
+			return nil, fmt.Errorf("read key file: %w", err)
 		}
 	}
 
