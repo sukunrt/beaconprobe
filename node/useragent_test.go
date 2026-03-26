@@ -14,8 +14,7 @@ import (
 
 func newTestMetrics(t *testing.T) *metrics.Metrics {
 	t.Helper()
-	reg := prometheus.NewPedanticRegistry()
-	return metrics.NewMetrics("test", reg)
+	return metrics.NewMetrics("test")
 }
 
 func TestNormalizeUserAgent(t *testing.T) {

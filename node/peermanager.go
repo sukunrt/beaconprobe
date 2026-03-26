@@ -54,8 +54,6 @@ func NewPeerManager(h host.Host, maxPeers int, m *metrics.Metrics) *PeerManager 
 func (pm *PeerManager) Run(ctx context.Context) {
 	sem := make(chan struct{}, maxConcurrentDials)
 	var inFlight atomic.Int64
-	ticker := time.NewTicker(peerCheckInterval)
-	defer ticker.Stop()
 
 	for {
 		// Gate: if peers + in-flight dials >= maxPeers + 20, wait for ticker.
@@ -63,7 +61,7 @@ func (pm *PeerManager) Run(ctx context.Context) {
 			select {
 			case <-ctx.Done():
 				return
-			case <-ticker.C:
+			case <-time.After(10 * time.Second):
 				continue
 			}
 		}
@@ -71,8 +69,6 @@ func (pm *PeerManager) Run(ctx context.Context) {
 		select {
 		case <-ctx.Done():
 			return
-		case <-ticker.C:
-			continue
 		case ai := <-pm.Candidates:
 			select {
 			case sem <- struct{}{}:

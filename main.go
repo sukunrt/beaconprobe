@@ -18,8 +18,6 @@ import (
 	"github.com/libp2p/go-libp2p/core/crypto"
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/peer"
-	"github.com/prometheus/client_golang/prometheus"
-	"github.com/prometheus/client_golang/prometheus/collectors"
 	"github.com/sukunrt/beaconprobe/config"
 	"github.com/sukunrt/beaconprobe/discovery"
 	"github.com/sukunrt/beaconprobe/metrics"
@@ -83,20 +81,16 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// 1. Prometheus registry.
-	reg := prometheus.NewRegistry()
-	reg.MustRegister(collectors.NewGoCollector())
-	metrics.RegisterDiscoveryMetrics(reg)
-	go metrics.Serve(cfg.MetricsAddr, reg)
+	go metrics.Serve(cfg.MetricsAddr)
 
 	attnetsBytes := rpc.MakeAttnetsBytes(subnetIDs)
 	statusProvider := rpc.MakeStatusProvider(forkDigest, genesisTime)
 
 	var cleanup func()
 	if cfg.Mode == "crawl" {
-		cleanup = runCrawl(ctx, cfg, reg, forkDigest, subnetIDs, attnetsBytes, statusProvider, genesisTime)
+		cleanup = runCrawl(ctx, cfg, forkDigest, subnetIDs, attnetsBytes, statusProvider, genesisTime)
 	} else {
-		cleanup = runProbe(ctx, cfg, reg, beaconCfg, forkDigest, subnetIDs, attnetsBytes, statusProvider, genesisTime)
+		cleanup = runProbe(ctx, cfg, beaconCfg, forkDigest, subnetIDs, attnetsBytes, statusProvider, genesisTime)
 	}
 
 	// Wait for shutdown signal.
@@ -115,7 +109,6 @@ func main() {
 func runCrawl(
 	ctx context.Context,
 	cfg *config.Config,
-	reg prometheus.Registerer,
 	forkDigest [4]byte,
 	subnetIDs []uint64,
 	attnetsBytes []byte,
@@ -123,7 +116,7 @@ func runCrawl(
 	genesisTime time.Time,
 ) func() {
 	inst := cfg.Instances[0]
-	m := metrics.NewMetrics(inst.Name, reg)
+	m := metrics.NewMetrics(inst.Name)
 
 	h, privKey, err := node.NewHost(cfg.TCPPort(0), cfg.QUICPort(0), cfg.KeyFile(0), inst.QuicOnly)
 	if err != nil {
@@ -166,7 +159,6 @@ func runCrawl(
 func runProbe(
 	ctx context.Context,
 	cfg *config.Config,
-	reg prometheus.Registerer,
 	beaconCfg *params.BeaconChainConfig,
 	forkDigest [4]byte,
 	subnetIDs []uint64,
@@ -227,7 +219,7 @@ func runProbe(
 		logHost(h, name)
 		hosts[name] = h
 		// Per-instance metrics.
-		m := metrics.NewMetrics(name, reg)
+		m := metrics.NewMetrics(name)
 
 		// RPC handlers.
 		rpc.RegisterHandlers(h, statusProvider, attnetsBytes)

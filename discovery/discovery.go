@@ -11,7 +11,6 @@ import (
 	"os"
 	"strings"
 	"sync"
-	"time"
 
 	"github.com/OffchainLabs/prysm/v7/config/params"
 	ecdsaprysm "github.com/OffchainLabs/prysm/v7/crypto/ecdsa"
@@ -52,10 +51,11 @@ type Config struct {
 	SubnetIDs    []uint64
 	AttnetsBytes []byte
 	QuicOnly     bool
-	ActiveCrawl  bool        // If true, spawn discoverPeers loop. Only first instance sets this.
-	CrawlFile    string      // If non-empty, run in crawl mode and write ENRs to this file.
-	Router       PeerRouter  // Probe mode: routes peers to instances. Nil in crawl mode.
+	ActiveCrawl  bool                 // If true, spawn discoverPeers loop. Only first instance sets this.
+	CrawlFile    string               // If non-empty, run in crawl mode and write ENRs to this file.
+	Router       PeerRouter           // Probe mode: routes peers to instances. Nil in crawl mode.
 	Candidates   chan<- peer.AddrInfo // Crawl mode only: single PeerManager channel. Nil in probe mode.
+
 }
 
 // StartDiscovery starts discv5 and a peer connection loop.
@@ -126,6 +126,25 @@ func StartDiscovery(ctx context.Context, h host.Host, cfg Config) (*discover.UDP
 		forkFilter := enode.Filter(listener.RandomNodes(), func(n *enode.Node) bool {
 			return matchesForkDigest(n, cfg.ForkDigest)
 		})
+
+		// Crawl mode: open file for appending ENRs and track seen peers.
+		// Register a network notifee so ENRs are written when PeerManager connects.
+		var crawlWriter *crawlFileWriter
+		if cfg.CrawlFile != "" {
+			var err error
+			crawlWriter, err = newCrawlFileWriter(cfg.CrawlFile)
+			if err != nil {
+				slog.Error("failed to open crawl file", "path", cfg.CrawlFile, "error", err)
+				return nil, err
+			}
+			defer crawlWriter.Close()
+
+			h.Network().Notify(&network.NotifyBundle{
+				ConnectedF: func(_ network.Network, conn network.Conn) {
+					crawlWriter.WriteConnected(conn.RemotePeer())
+				},
+			})
+		}
 		go discoverPeers(ctx, h, forkFilter, cfg)
 
 		// Optionally start discv4 scanner.
@@ -152,33 +171,11 @@ func StartDiscovery(ctx context.Context, h host.Host, cfg Config) (*discover.UDP
 
 func discoverPeers(ctx context.Context, h host.Host, iterator enode.Iterator, cfg Config) {
 	defer iterator.Close()
-	ticker := time.NewTicker(30 * time.Second)
-	defer ticker.Stop()
-
-	// Crawl mode: open file for appending ENRs and track seen peers.
-	// Register a network notifee so ENRs are written when PeerManager connects.
-	var crawlWriter *crawlFileWriter
-	if cfg.CrawlFile != "" {
-		var err error
-		crawlWriter, err = newCrawlFileWriter(cfg.CrawlFile)
-		if err != nil {
-			slog.Error("failed to open crawl file", "path", cfg.CrawlFile, "error", err)
-			return
-		}
-		defer crawlWriter.Close()
-
-		h.Network().Notify(&network.NotifyBundle{
-			ConnectedF: func(_ network.Network, conn network.Conn) {
-				crawlWriter.WriteConnected(conn.RemotePeer())
-			},
-		})
-	}
 
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case <-ticker.C: // rate-limit: drain ticker to pace the discovery loop
 		default:
 		}
 
@@ -359,7 +356,6 @@ func hasQUICAddr(ai *peer.AddrInfo) bool {
 	return false
 }
 
-
 // crawlFileWriter writes ENRs to a file with deduplication.
 // Discovery calls RegisterENR when sending a candidate to PeerManager,
 // and WriteConnected is called via a network notifee when the peer connects.
@@ -499,4 +495,3 @@ func DialBootstrapPeers(
 	}
 	slog.Info("bootstrap: finished reading file")
 }
-
